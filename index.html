@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Trading Tool — Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0e1117; color: #fafafa; }
+.header { background: #1a1d24; padding: 20px 30px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }
+.header h1 { font-size: 22px; }
+.header .mode { background: #ff6b35; color: #fff; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+.metrics-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px; margin-bottom: 20px; }
+.metric-card { background: #1a1d24; border: 1px solid #333; border-radius: 8px; padding: 16px; }
+.metric-card .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+.metric-card .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+.metric-card .delta { font-size: 13px; margin-top: 2px; }
+.positive { color: #00d26a; }
+.negative { color: #f45b69; }
+.neutral { color: #888; }
+.status-bar { padding: 12px 16px; border-radius: 6px; margin-bottom: 20px; font-size: 14px; }
+.status-info { background: #1e3a5f; border: 1px solid #2980b9; }
+.status-success { background: #1e4a3a; border: 1px solid #27ae60; }
+.status-warning { background: #4a3a1e; border: 1px solid #f39c12; }
+.tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #333; }
+.tab { padding: 12px 24px; cursor: pointer; color: #888; font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+.tab:hover { color: #ccc; }
+.tab.active { color: #fff; border-bottom-color: #1f77b4; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+.decision-card { background: #1a1d24; border: 1px solid #333; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+.decision-header { padding: 16px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+.decision-header:hover { background: #22252d; }
+.action-badge { padding: 4px 12px; border-radius: 4px; font-weight: 700; font-size: 13px; }
+.action-BUY { background: #1e4a3a; color: #00d26a; }
+.action-SELL { background: #4a1e1e; color: #f45b69; }
+.action-HOLD { background: #333; color: #888; }
+.decision-detail { padding: 0 16px 16px; display: none; border-top: 1px solid #333; }
+.decision-detail.open { display: block; padding-top: 16px; }
+.score-bar { display: flex; gap: 20px; margin: 10px 0; }
+.score-item { text-align: center; }
+.score-item .score-value { font-size: 20px; font-weight: 700; }
+.score-item .score-label { font-size: 11px; color: #888; }
+.reasoning-box { background: #0e1117; border: 1px solid #333; border-radius: 6px; padding: 14px; margin-top: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; line-height: 1.6; color: #ccc; max-height: 300px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 10px 12px; background: #1a1d24; color: #888; font-size: 12px; text-transform: uppercase; border-bottom: 2px solid #333; }
+td { padding: 10px 12px; border-bottom: 1px solid #262730; font-size: 13px; }
+tr:hover { background: #1a1d24; }
+.chart-container { background: #1a1d24; border: 1px solid #333; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+.period-table { margin-top: 20px; }
+.risk-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-top: 20px; }
+.ai-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 12px; }
+.ai-box { background: #0e1117; border: 1px solid #333; border-radius: 6px; padding: 14px; }
+.ai-box h4 { margin-bottom: 8px; font-size: 13px; }
+.factors-json { font-family: monospace; font-size: 11px; color: #888; margin-top: 8px; }
+@media (max-width: 900px) {
+    .metrics-row { grid-template-columns: repeat(3, 1fr); }
+    .ai-comparison { grid-template-columns: 1fr; }
+    .risk-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 600px) {
+    .metrics-row { grid-template-columns: repeat(2, 1fr); }
+    .risk-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>AI Trading Tool</h1>
+    <span class="mode">PAPER TRADING</span>
+</div>
+
+<div class="container">
+    <div id="metrics-row" class="metrics-row"></div>
+    <div id="status-bar"></div>
+
+    <div class="tabs" id="tabs">
+        <div class="tab active" data-tab="recommendations">Recommendations</div>
+        <div class="tab" data-tab="positions">Open Positions</div>
+        <div class="tab" data-tab="history">Trade History</div>
+        <div class="tab" data-tab="benchmark">Benchmark Comparison</div>
+        <div class="tab" data-tab="analysis">AI Analysis Detail</div>
+    </div>
+
+    <div id="recommendations" class="tab-content active"></div>
+    <div id="positions" class="tab-content"></div>
+    <div id="history" class="tab-content"></div>
+    <div id="benchmark" class="tab-content"></div>
+    <div id="analysis" class="tab-content"></div>
+</div>
+
+<div style="text-align:center; padding: 20px; color: #555; font-size: 12px;">
+    Paper Trading Emulator | Initial Capital: &pound;20,000 | Stop-Loss: &pound;200/day | Target: &pound;200-500/day | Mode: Specialised Consensus
+    <br>Generated: <span id="gen-time"></span>
+</div>
+
+<script>
+const DATA = {
+  "generated_at": "2026-04-05 22:22:55",
+  "portfolio": {
+    "value": 21146.29,
+    "cash": 9515.83,
+    "total_pnl": 1146.29,
+    "total_pnl_pct": 5.73,
+    "daily_pnl": -25.59,
+    "open_positions": 4,
+    "target_attainment": 0
+  },
+  "risk_metrics": {
+    "sharpe_ratio": 1.94,
+    "max_drawdown": -4.8,
+    "win_rate": 55.9,
+    "avg_daily_return": 0.127,
+    "volatility": 11.1
+  },
+  "decisions": [
+    {
+      "ticker": "SHEL.L",
+      "name": "Shell",
+      "sector": "Energy",
+      "price": 2654,
+      "action": "BUY",
+      "combined_score": 7.5,
+      "claude_score": 5.8,
+      "grok_score": 8.8,
+      "stop_loss": 2522.55,
+      "take_profit": 2851.18,
+      "position_size": 1980.0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk/Fundamentals): 5.8/10 \u2014 CLEARED \u2713\n  Grok (Sentiment/Momentum): 8.8/10 \u2014 CLEARED \u2713\n  Combined: 7.5/10 \u2192 BUY\n\n[Claude Analysis] Shell @ 2654.00p\nOverall confidence: 5.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (12.3) \u2014 potential value\n  \u2022 Decent dividend yield (3.2%) \u2014 income support\n\n[Grok Analysis] Shell @ 2654.00p\nSentiment score: 8.8/10 \u2192 BUY\n\nKey factors:\n  \u2022 Momentum BUY signal (score 7) \u2014 trend is your friend\n  \u2022 3 consecutive green days \u2014 momentum building\n  \u2022 Energy sector tends to have strong momentum plays\n  \u2022 RSI 65 \u2014 bullish momentum zone, not yet overbought",
+      "claude_reasoning": "[Claude Analysis] Shell @ 2654.00p\nOverall confidence: 5.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (12.3) \u2014 potential value\n  \u2022 Decent dividend yield (3.2%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] Shell @ 2654.00p\nSentiment score: 8.8/10 \u2192 BUY\n\nKey factors:\n  \u2022 Momentum BUY signal (score 7) \u2014 trend is your friend\n  \u2022 3 consecutive green days \u2014 momentum building\n  \u2022 Energy sector tends to have strong momentum plays\n  \u2022 RSI 65 \u2014 bullish momentum zone, not yet overbought",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 0 sell",
+        "pe_ratio": 12.3,
+        "dividend_yield": "3.2%",
+        "beta": 0.9,
+        "52w_range_position": "55%",
+        "recent_positive_days": "5/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "BUY",
+        "breakout_signal": "HOLD",
+        "sentiment_proxy": "neutral",
+        "sector": "Energy",
+        "rsi": "64.7"
+      }
+    },
+    {
+      "ticker": "BA.L",
+      "name": "BAE Systems",
+      "sector": "Defence",
+      "price": 1456,
+      "action": "HOLD",
+      "combined_score": 6.2,
+      "claude_score": 5.3,
+      "grok_score": 7.0,
+      "stop_loss": 1383.47,
+      "take_profit": 1564.79,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 5.3/10 \u2014 CLEARED \u2713\n  Grok (Momentum): 7.0/10 \u2014 CLEARED \u2713\n  Combined: 6.2/10 \u2192 HOLD (partial agreement only)\n\n[Claude Analysis] BAE Systems @ 1456.00p\nOverall confidence: 5.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Decent dividend yield (3.3%) \u2014 income support\n\n[Grok Analysis] BAE Systems @ 1456.00p\nSentiment score: 7.0/10 \u2192 BUY\n\nKey factors:\n  \u2022 Momentum BUY signal (score 4) \u2014 trend is your friend",
+      "claude_reasoning": "[Claude Analysis] BAE Systems @ 1456.00p\nOverall confidence: 5.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Decent dividend yield (3.3%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] BAE Systems @ 1456.00p\nSentiment score: 7.0/10 \u2192 BUY\n\nKey factors:\n  \u2022 Momentum BUY signal (score 4) \u2014 trend is your friend",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 0 sell",
+        "pe_ratio": 22.1,
+        "dividend_yield": "3.3%",
+        "beta": 0.7,
+        "52w_range_position": "55%",
+        "recent_positive_days": "5/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "BUY",
+        "breakout_signal": "HOLD",
+        "sentiment_proxy": "neutral",
+        "sector": "Defence",
+        "rsi": "46.0"
+      }
+    },
+    {
+      "ticker": "ULVR.L",
+      "name": "Unilever",
+      "sector": "Consumer",
+      "price": 4320,
+      "action": "HOLD",
+      "combined_score": 6.0,
+      "claude_score": 5.3,
+      "grok_score": 6.5,
+      "stop_loss": 4115.09,
+      "take_profit": 4690.52,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 5.3/10 \u2014 CLEARED \u2713\n  Grok (Momentum): 6.5/10 \u2014 CLEARED \u2713\n  Combined: 6.0/10 \u2192 HOLD (partial agreement only)\n\n[Claude Analysis] Unilever @ 4320.00p\nOverall confidence: 5.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Decent dividend yield (3.0%) \u2014 income support\n\n[Grok Analysis] Unilever @ 4320.00p\nSentiment score: 6.5/10 \u2192 BUY\n\nKey factors:\n  \u2022 3 consecutive green days \u2014 momentum building\n  \u2022 RSI 59 \u2014 bullish momentum zone, not yet overbought",
+      "claude_reasoning": "[Claude Analysis] Unilever @ 4320.00p\nOverall confidence: 5.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Decent dividend yield (3.0%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] Unilever @ 4320.00p\nSentiment score: 6.5/10 \u2192 BUY\n\nKey factors:\n  \u2022 3 consecutive green days \u2014 momentum building\n  \u2022 RSI 59 \u2014 bullish momentum zone, not yet overbought",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 1 sell",
+        "pe_ratio": 19.8,
+        "dividend_yield": "3.0%",
+        "beta": 0.4,
+        "52w_range_position": "55%",
+        "recent_positive_days": "5/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "HOLD",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "sector": "Consumer",
+        "rsi": "59.2"
+      }
+    },
+    {
+      "ticker": "GSK.L",
+      "name": "GSK",
+      "sector": "Healthcare",
+      "price": 1580,
+      "action": "HOLD",
+      "combined_score": 5.6,
+      "claude_score": 5.8,
+      "grok_score": 5.5,
+      "stop_loss": 1515.11,
+      "take_profit": 1835.02,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 5.8/10 \u2014 CLEARED \u2713\n  Grok (Momentum): 5.5/10 \u2014 CLEARED \u2713\n  Combined: 5.6/10 \u2192 HOLD (partial agreement only)\n\n[Claude Analysis] GSK @ 1580.00p\nOverall confidence: 5.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (14.2) \u2014 potential value\n  \u2022 Decent dividend yield (3.6%) \u2014 income support\n\n[Grok Analysis] GSK @ 1580.00p\nSentiment score: 5.5/10 \u2192 HOLD\n\nKey factors:\n  \u2022 RSI 67 \u2014 bullish momentum zone, not yet overbought",
+      "claude_reasoning": "[Claude Analysis] GSK @ 1580.00p\nOverall confidence: 5.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (14.2) \u2014 potential value\n  \u2022 Decent dividend yield (3.6%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] GSK @ 1580.00p\nSentiment score: 5.5/10 \u2192 HOLD\n\nKey factors:\n  \u2022 RSI 67 \u2014 bullish momentum zone, not yet overbought",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 1 sell",
+        "pe_ratio": 14.2,
+        "dividend_yield": "3.6%",
+        "beta": 0.5,
+        "52w_range_position": "55%",
+        "recent_positive_days": "6/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "HOLD",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "sector": "Healthcare",
+        "rsi": "66.8"
+      }
+    },
+    {
+      "ticker": "BARC.L",
+      "name": "Barclays",
+      "sector": "Financials",
+      "price": 268,
+      "action": "HOLD",
+      "combined_score": 5.1,
+      "claude_score": 5.3,
+      "grok_score": 5.0,
+      "stop_loss": 257.67,
+      "take_profit": 239.53,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 5.3/10 \u2014 CLEARED \u2713\n  Grok (Momentum): 5.0/10 \u2014 WEAK \u2717\n  Combined: 5.1/10 \u2192 HOLD (partial agreement only)\n\n[Claude Analysis] Barclays @ 268.00p\nOverall confidence: 5.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (7.4) \u2014 potential value\n  \u2022 Decent dividend yield (4.2%) \u2014 income support\n  \u2022 Persistent weakness (3/10 positive days)\n\n[Grok Analysis] Barclays @ 268.00p\nSentiment score: 5.0/10 \u2192 HOLD\n\nKey factors:\n",
+      "claude_reasoning": "[Claude Analysis] Barclays @ 268.00p\nOverall confidence: 5.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (7.4) \u2014 potential value\n  \u2022 Decent dividend yield (4.2%) \u2014 income support\n  \u2022 Persistent weakness (3/10 positive days)",
+      "grok_reasoning": "[Grok Analysis] Barclays @ 268.00p\nSentiment score: 5.0/10 \u2192 HOLD\n\nKey factors:\n",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 0 sell",
+        "pe_ratio": 7.4,
+        "dividend_yield": "4.2%",
+        "beta": 1.3,
+        "52w_range_position": "55%",
+        "recent_positive_days": "3/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "HOLD",
+        "breakout_signal": "HOLD",
+        "sentiment_proxy": "neutral",
+        "sector": "Financials",
+        "rsi": "17.0"
+      }
+    },
+    {
+      "ticker": "GLEN.L",
+      "name": "Glencore",
+      "sector": "Mining",
+      "price": 387,
+      "action": "HOLD",
+      "combined_score": 4.3,
+      "claude_score": 5.8,
+      "grok_score": 3.0,
+      "stop_loss": 379.26,
+      "take_profit": 402.48,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 5.8/10 \u2014 CLEARED \u2713\n  Grok (Momentum): 3.0/10 \u2014 WEAK \u2717\n  Combined: 4.3/10 \u2192 HOLD (partial agreement only)\n\n[Claude Analysis] Glencore @ 387.00p\nOverall confidence: 5.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (10.5) \u2014 potential value\n  \u2022 Decent dividend yield (4.7%) \u2014 income support\n\n[Grok Analysis] Glencore @ 387.00p\nSentiment score: 3.0/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend",
+      "claude_reasoning": "[Claude Analysis] Glencore @ 387.00p\nOverall confidence: 5.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Attractive P/E ratio (10.5) \u2014 potential value\n  \u2022 Decent dividend yield (4.7%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] Glencore @ 387.00p\nSentiment score: 3.0/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend",
+      "claude_factors": {
+        "strategy_agreement": "0 buy, 1 sell",
+        "pe_ratio": 10.5,
+        "dividend_yield": "4.7%",
+        "beta": 1.4,
+        "52w_range_position": "55%",
+        "recent_positive_days": "5/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "SELL",
+        "breakout_signal": "HOLD",
+        "sentiment_proxy": "neutral",
+        "sector": "Mining",
+        "rsi": "23.2"
+      }
+    },
+    {
+      "ticker": "RIO.L",
+      "name": "Rio Tinto",
+      "sector": "Mining",
+      "price": 5234,
+      "action": "HOLD",
+      "combined_score": 4.1,
+      "claude_score": 4.3,
+      "grok_score": 4.0,
+      "stop_loss": 4989.87,
+      "take_profit": 5922.81,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 4.3/10 \u2014 RISK WARNING \u2717\n  Grok (Momentum): 4.0/10 \u2014 WEAK \u2717\n  Combined: 4.1/10 \u2192 HOLD\n\n[Claude Analysis] Rio Tinto @ 5234.00p\nOverall confidence: 4.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (9.2) \u2014 potential value\n  \u2022 Decent dividend yield (3.2%) \u2014 income support\n\n[Grok Analysis] Rio Tinto @ 5234.00p\nSentiment score: 4.0/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 3 consecutive green days \u2014 momentum building",
+      "claude_reasoning": "[Claude Analysis] Rio Tinto @ 5234.00p\nOverall confidence: 4.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (9.2) \u2014 potential value\n  \u2022 Decent dividend yield (3.2%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] Rio Tinto @ 5234.00p\nSentiment score: 4.0/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 3 consecutive green days \u2014 momentum building",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 2 sell",
+        "pe_ratio": 9.2,
+        "dividend_yield": "3.2%",
+        "beta": 1.1,
+        "52w_range_position": "55%",
+        "recent_positive_days": "5/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "SELL",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "sector": "Mining",
+        "rsi": "48.8"
+      }
+    },
+    {
+      "ticker": "BP.L",
+      "name": "BP",
+      "sector": "Energy",
+      "price": 412,
+      "action": "HOLD",
+      "combined_score": 4.0,
+      "claude_score": 4.3,
+      "grok_score": 3.8,
+      "stop_loss": 392.09,
+      "take_profit": 502.84,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 4.3/10 \u2014 RISK WARNING \u2717\n  Grok (Momentum): 3.8/10 \u2014 WEAK \u2717\n  Combined: 4.0/10 \u2192 HOLD\n\n[Claude Analysis] BP @ 412.00p\nOverall confidence: 4.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (11.5) \u2014 potential value\n  \u2022 Decent dividend yield (3.0%) \u2014 income support\n\n[Grok Analysis] BP @ 412.00p\nSentiment score: 3.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 Energy sector tends to have strong momentum plays\n  \u2022 RSI 66 \u2014 bullish momentum zone, not yet overbought",
+      "claude_reasoning": "[Claude Analysis] BP @ 412.00p\nOverall confidence: 4.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (11.5) \u2014 potential value\n  \u2022 Decent dividend yield (3.0%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] BP @ 412.00p\nSentiment score: 3.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 Energy sector tends to have strong momentum plays\n  \u2022 RSI 66 \u2014 bullish momentum zone, not yet overbought",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 2 sell",
+        "pe_ratio": 11.5,
+        "dividend_yield": "3.0%",
+        "beta": 1.0,
+        "52w_range_position": "55%",
+        "recent_positive_days": "6/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "SELL",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "sector": "Energy",
+        "rsi": "66.0"
+      }
+    },
+    {
+      "ticker": "AZN.L",
+      "name": "AstraZeneca",
+      "sector": "Healthcare",
+      "price": 11890,
+      "action": "HOLD",
+      "combined_score": 3.6,
+      "claude_score": 3.8,
+      "grok_score": 3.5,
+      "stop_loss": 11433.81,
+      "take_profit": 12969.97,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 3.8/10 \u2014 RISK WARNING \u2717\n  Grok (Momentum): 3.5/10 \u2014 WEAK \u2717\n  Combined: 3.6/10 \u2192 HOLD\n\n[Claude Analysis] AstraZeneca @ 11890.00p\nOverall confidence: 3.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Decent dividend yield (3.2%) \u2014 income support\n\n[Grok Analysis] AstraZeneca @ 11890.00p\nSentiment score: 3.5/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 RSI 58 \u2014 bullish momentum zone, not yet overbought",
+      "claude_reasoning": "[Claude Analysis] AstraZeneca @ 11890.00p\nOverall confidence: 3.8/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Decent dividend yield (3.2%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] AstraZeneca @ 11890.00p\nSentiment score: 3.5/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 RSI 58 \u2014 bullish momentum zone, not yet overbought",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 2 sell",
+        "pe_ratio": 35.2,
+        "dividend_yield": "3.2%",
+        "beta": 0.6,
+        "52w_range_position": "55%",
+        "recent_positive_days": "5/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "SELL",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "sector": "Healthcare",
+        "rsi": "58.2"
+      }
+    },
+    {
+      "ticker": "HSBA.L",
+      "name": "HSBC",
+      "sector": "Financials",
+      "price": 742,
+      "action": "HOLD",
+      "combined_score": 3.6,
+      "claude_score": 4.3,
+      "grok_score": 3.0,
+      "stop_loss": 710.71,
+      "take_profit": 876.35,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 4.3/10 \u2014 RISK WARNING \u2717\n  Grok (Momentum): 3.0/10 \u2014 WEAK \u2717\n  Combined: 3.6/10 \u2192 HOLD\n\n[Claude Analysis] HSBC @ 742.00p\nOverall confidence: 4.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (8.1) \u2014 potential value\n  \u2022 Decent dividend yield (4.4%) \u2014 income support\n\n[Grok Analysis] HSBC @ 742.00p\nSentiment score: 3.0/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend",
+      "claude_reasoning": "[Claude Analysis] HSBC @ 742.00p\nOverall confidence: 4.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (8.1) \u2014 potential value\n  \u2022 Decent dividend yield (4.4%) \u2014 income support",
+      "grok_reasoning": "[Grok Analysis] HSBC @ 742.00p\nSentiment score: 3.0/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 2 sell",
+        "pe_ratio": 8.1,
+        "dividend_yield": "4.4%",
+        "beta": 1.1,
+        "52w_range_position": "55%",
+        "recent_positive_days": "6/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "SELL",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "sector": "Financials",
+        "rsi": "50.6"
+      }
+    },
+    {
+      "ticker": "LLOY.L",
+      "name": "Lloyds",
+      "sector": "Financials",
+      "price": 62,
+      "action": "SELL",
+      "combined_score": 3.5,
+      "claude_score": 4.0,
+      "grok_score": 3.0,
+      "stop_loss": 59.16,
+      "take_profit": 69.88,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 4.0/10 \u2014 RISK WARNING \u2717\n  Grok (Momentum): 3.0/10 \u2014 WEAK \u2717\n  Combined: 3.5/10 \u2192 SELL\n\n[Claude Analysis] Lloyds @ 62.00p\nOverall confidence: 4.0/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (8.8) \u2014 potential value\n\n[Grok Analysis] Lloyds @ 62.00p\nSentiment score: 3.0/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend",
+      "claude_reasoning": "[Claude Analysis] Lloyds @ 62.00p\nOverall confidence: 4.0/10 \u2192 HOLD\n\nKey factors:\n  \u2022 2 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Attractive P/E ratio (8.8) \u2014 potential value",
+      "grok_reasoning": "[Grok Analysis] Lloyds @ 62.00p\nSentiment score: 3.0/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 2 sell",
+        "pe_ratio": 8.8,
+        "beta": 1.2,
+        "52w_range_position": "55%",
+        "recent_positive_days": "5/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "SELL",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "sector": "Financials",
+        "rsi": "46.1"
+      }
+    },
+    {
+      "ticker": "VUSA.L",
+      "name": "Vanguard S&P 500",
+      "sector": "ETF",
+      "price": 8456,
+      "action": "SELL",
+      "combined_score": 3.4,
+      "claude_score": 3.3,
+      "grok_score": 3.5,
+      "stop_loss": 8101.2,
+      "take_profit": 10037.0,
+      "position_size": 0,
+      "reasoning": "CONSENSUS (Specialised Mode):\n  Claude (Risk): 3.3/10 \u2014 RISK WARNING \u2717\n  Grok (Momentum): 3.5/10 \u2014 WEAK \u2717\n  Combined: 3.4/10 \u2192 SELL\n\n[Claude Analysis] Vanguard S&P 500 @ 8456.00p\nOverall confidence: 3.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 3 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Decent dividend yield (4.7%) \u2014 income support\n  \u2022 Persistent weakness (3/10 positive days)\n\n[Grok Analysis] Vanguard S&P 500 @ 8456.00p\nSentiment score: 3.5/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 3 consecutive red days \u2014 contrarian bounce opportunity",
+      "claude_reasoning": "[Claude Analysis] Vanguard S&P 500 @ 8456.00p\nOverall confidence: 3.3/10 \u2192 HOLD\n\nKey factors:\n  \u2022 3 strategies signal SELL \u2014 multi-strategy warning\n  \u2022 Decent dividend yield (4.7%) \u2014 income support\n  \u2022 Persistent weakness (3/10 positive days)",
+      "grok_reasoning": "[Grok Analysis] Vanguard S&P 500 @ 8456.00p\nSentiment score: 3.5/10 \u2192 SELL\n\nKey factors:\n  \u2022 Momentum SELL signal \u2014 don't fight the trend\n  \u2022 3 consecutive red days \u2014 contrarian bounce opportunity",
+      "claude_factors": {
+        "strategy_agreement": "1 buy, 3 sell",
+        "dividend_yield": "4.7%",
+        "beta": 1.0,
+        "52w_range_position": "55%",
+        "recent_positive_days": "3/10"
+      },
+      "grok_factors": {
+        "momentum_signal": "SELL",
+        "breakout_signal": "SELL",
+        "sentiment_proxy": "neutral",
+        "contrarian_flag": true,
+        "sector": "ETF",
+        "rsi": "52.5"
+      }
+    }
+  ],
+  "chart": {
+    "dates": [
+      "2026-02-04",
+      "2026-02-05",
+      "2026-02-06",
+      "2026-02-07",
+      "2026-02-08",
+      "2026-02-09",
+      "2026-02-10",
+      "2026-02-11",
+      "2026-02-12",
+      "2026-02-13",
+      "2026-02-14",
+      "2026-02-15",
+      "2026-02-16",
+      "2026-02-17",
+      "2026-02-18",
+      "2026-02-19",
+      "2026-02-20",
+      "2026-02-21",
+      "2026-02-22",
+      "2026-02-23",
+      "2026-02-24",
+      "2026-02-25",
+      "2026-02-26",
+      "2026-02-27",
+      "2026-02-28",
+      "2026-03-01",
+      "2026-03-02",
+      "2026-03-03",
+      "2026-03-04",
+      "2026-03-05",
+      "2026-03-06",
+      "2026-03-07",
+      "2026-03-08",
+      "2026-03-09",
+      "2026-03-10",
+      "2026-03-11",
+      "2026-03-12",
+      "2026-03-13",
+      "2026-03-14",
+      "2026-03-15",
+      "2026-03-16",
+      "2026-03-17",
+      "2026-03-18",
+      "2026-03-19",
+      "2026-03-20",
+      "2026-03-21",
+      "2026-03-22",
+      "2026-03-23",
+      "2026-03-24",
+      "2026-03-25",
+      "2026-03-26",
+      "2026-03-27",
+      "2026-03-28",
+      "2026-03-29",
+      "2026-03-30",
+      "2026-03-31",
+      "2026-04-01",
+      "2026-04-02",
+      "2026-04-03",
+      "2026-04-04"
+    ],
+    "portfolio": [
+      20000,
+      19685.98,
+      19936.25,
+      19895.54,
+      20087.24,
+      20218.24,
+      20155.44,
+      20099.75,
+      20282.41,
+      20513.72,
+      20603.96,
+      20586.3,
+      20389.1,
+      20167.97,
+      19939.8,
+      19925.04,
+      19835.69,
+      19642.96,
+      19436.03,
+      19524.78,
+      19707.26,
+      19691.66,
+      19854.79,
+      19956.55,
+      20046.17,
+      20065.13,
+      20036.24,
+      20057.2,
+      20106.48,
+      20304.8,
+      20501.83,
+      20410.37,
+      20493.32,
+      20457.05,
+      20622.58,
+      21076.8,
+      21015.9,
+      21164.42,
+      20971.21,
+      21208.55,
+      21454.8,
+      21303.58,
+      21102.97,
+      21195.35,
+      21187.51,
+      21163.91,
+      21278.76,
+      21170.96,
+      21108.32,
+      21017.48,
+      20910.28,
+      20985.61,
+      20982.69,
+      21215.16,
+      21132.74,
+      21011.0,
+      21063.21,
+      21104.42,
+      21307.7,
+      21146.29
+    ],
+    "benchmark": [
+      20000.0,
+      20377.68,
+      20211.67,
+      20734.32,
+      20700.64,
+      20867.68,
+      20546.3,
+      20859.04,
+      20614.77,
+      20508.02,
+      20789.58,
+      20983.06,
+      20468.4,
+      20058.96,
+      20059.43,
+      20156.69,
+      20349.42,
+      20227.95,
+      20402.45,
+      20270.02,
+      19976.43,
+      19977.99,
+      20221.5,
+      20549.84,
+      20701.19,
+      21105.37,
+      20949.44,
+      20904.15,
+      20823.06,
+      20579.55,
+      20333.31,
+      20285.2,
+      19938.44,
+      20232.89,
+      20151.69,
+      20012.01,
+      20254.25,
+      20274.9,
+      20040.24,
+      19773.44,
+      19618.33,
+      19362.84,
+      19294.56,
+      18810.87,
+      18931.47,
+      18827.97,
+      19036.2,
+      19184.23,
+      19156.64,
+      19090.28,
+      19360.52,
+      19460.69,
+      19524.92,
+      19421.44,
+      19237.34,
+      19165.16,
+      19009.02,
+      19135.64,
+      19237.58,
+      19365.6
+    ]
+  },
+  "trades": [
+    {
+      "id": "T00010",
+      "timestamp": "2026-04-03 22:22",
+      "ticker": "GSK.L",
+      "name": "GSK",
+      "action": "BUY",
+      "price": 1630.05,
+      "value": 2641.22,
+      "claude_score": 4.6,
+      "grok_score": 5.8,
+      "pnl": 0,
+      "status": "open"
+    },
+    {
+      "id": "T00011",
+      "timestamp": "2026-04-03 22:22",
+      "ticker": "RIO.L",
+      "name": "Rio Tinto",
+      "action": "BUY",
+      "price": 4992.13,
+      "value": 2902.43,
+      "claude_score": 7.2,
+      "grok_score": 6.2,
+      "pnl": 0,
+      "status": "open"
+    },
+    {
+      "id": "T00007",
+      "timestamp": "2026-04-02 22:22",
+      "ticker": "HSBA.L",
+      "name": "HSBC",
+      "action": "BUY",
+      "price": 711.01,
+      "value": 534.03,
+      "claude_score": 7.8,
+      "grok_score": 6.2,
+      "pnl": 0,
+      "status": "open"
+    },
+    {
+      "id": "T00008",
+      "timestamp": "2026-03-30 22:22",
+      "ticker": "SHEL.L",
+      "name": "Shell",
+      "action": "BUY",
+      "price": 2687.69,
+      "value": 4046.32,
+      "claude_score": 7.1,
+      "grok_score": 7.5,
+      "pnl": 0,
+      "status": "open"
+    },
+    {
+      "id": "T00012",
+      "timestamp": "2026-03-23 22:22",
+      "ticker": "HSBA.L",
+      "name": "HSBC",
+      "action": "SELL",
+      "price": 765.86,
+      "value": 828.7,
+      "claude_score": 6.5,
+      "grok_score": 5.7,
+      "pnl": 175.08,
+      "status": "closed"
+    },
+    {
+      "id": "T00003",
+      "timestamp": "2026-03-22 22:22",
+      "ticker": "GSK.L",
+      "name": "GSK",
+      "action": "SELL",
+      "price": 1502.39,
+      "value": 1292.84,
+      "claude_score": 6.6,
+      "grok_score": 7.7,
+      "pnl": 107.3,
+      "status": "closed"
+    },
+    {
+      "id": "T00006",
+      "timestamp": "2026-03-21 22:22",
+      "ticker": "RIO.L",
+      "name": "Rio Tinto",
+      "action": "SELL",
+      "price": 5241.49,
+      "value": 2965.52,
+      "claude_score": 7.6,
+      "grok_score": 4.8,
+      "pnl": 62.45,
+      "status": "closed"
+    },
+    {
+      "id": "T00005",
+      "timestamp": "2026-03-19 22:22",
+      "ticker": "SHEL.L",
+      "name": "Shell",
+      "action": "BUY",
+      "price": 2623.71,
+      "value": 4161.11,
+      "claude_score": 4.1,
+      "grok_score": 6.1,
+      "pnl": 0,
+      "status": "open"
+    },
+    {
+      "id": "T00002",
+      "timestamp": "2026-03-17 22:22",
+      "ticker": "BARC.L",
+      "name": "Barclays",
+      "action": "BUY",
+      "price": 280.07,
+      "value": 362.9,
+      "claude_score": 8.0,
+      "grok_score": 7.3,
+      "pnl": 0,
+      "status": "open"
+    },
+    {
+      "id": "T00004",
+      "timestamp": "2026-03-15 22:22",
+      "ticker": "BARC.L",
+      "name": "Barclays",
+      "action": "BUY",
+      "price": 280.3,
+      "value": 512.52,
+      "claude_score": 5.5,
+      "grok_score": 7.2,
+      "pnl": 0,
+      "status": "open"
+    },
+    {
+      "id": "T00009",
+      "timestamp": "2026-03-10 22:22",
+      "ticker": "BP.L",
+      "name": "BP",
+      "action": "SELL",
+      "price": 425.83,
+      "value": 661.79,
+      "claude_score": 7.9,
+      "grok_score": 7.1,
+      "pnl": -22.44,
+      "status": "closed"
+    },
+    {
+      "id": "T00001",
+      "timestamp": "2026-03-08 22:22",
+      "ticker": "SHEL.L",
+      "name": "Shell",
+      "action": "BUY",
+      "price": 2614.03,
+      "value": 2143.59,
+      "claude_score": 5.3,
+      "grok_score": 5.4,
+      "pnl": 0,
+      "status": "open"
+    }
+  ],
+  "period_returns": {
+    "Daily": {
+      "portfolio": -0.28,
+      "benchmark": 0.14
+    },
+    "Weekly": {
+      "portfolio": 1.16,
+      "benchmark": 0.41
+    },
+    "Monthly": {
+      "portfolio": 3.16,
+      "benchmark": 1.63
+    },
+    "Quarterly": {
+      "portfolio": 5.93,
+      "benchmark": 3.1
+    },
+    "Annual": {
+      "portfolio": 16.09,
+      "benchmark": 11.71
+    }
+  }
+};
+
+// ─── Metrics ──────────────────────────────────────────────
+function renderMetrics() {
+    const p = DATA.portfolio;
+    const pnlClass = p.total_pnl >= 0 ? 'positive' : 'negative';
+    const dailyClass = p.daily_pnl >= 0 ? 'positive' : 'negative';
+    document.getElementById('metrics-row').innerHTML = `
+        <div class="metric-card">
+            <div class="label">Portfolio Value</div>
+            <div class="value">&pound;${p.value.toLocaleString('en-GB', {minimumFractionDigits:2})}</div>
+            <div class="delta ${pnlClass}">&pound;${p.total_pnl >= 0 ? '+' : ''}${p.total_pnl.toFixed(2)}</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">Cash Available</div>
+            <div class="value">&pound;${p.cash.toLocaleString('en-GB', {minimumFractionDigits:2})}</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">Total Return</div>
+            <div class="value ${pnlClass}">${p.total_pnl_pct >= 0 ? '+' : ''}${p.total_pnl_pct}%</div>
+            <div class="delta ${pnlClass}">&pound;${p.total_pnl >= 0 ? '+' : ''}${p.total_pnl.toFixed(2)}</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">Today's P&amp;L</div>
+            <div class="value ${dailyClass}">&pound;${p.daily_pnl >= 0 ? '+' : ''}${p.daily_pnl.toFixed(2)}</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">Open Positions</div>
+            <div class="value">${p.open_positions}</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">Daily Target</div>
+            <div class="value">${p.target_attainment}%</div>
+            <div class="delta neutral">&pound;${p.daily_pnl.toFixed(0)} / &pound;200</div>
+        </div>
+    `;
+
+    let statusClass, statusText;
+    if (p.daily_pnl >= 200) {
+        statusClass = 'status-success';
+        statusText = `Daily target reached! P&L: &pound;${p.daily_pnl.toFixed(2)}`;
+    } else if (p.daily_pnl < 0) {
+        statusClass = 'status-warning';
+        statusText = `Daily loss: &pound;${Math.abs(p.daily_pnl).toFixed(2)} | Stop-loss buffer: &pound;${(200 - Math.abs(p.daily_pnl)).toFixed(2)}`;
+    } else {
+        statusClass = 'status-info';
+        statusText = 'Trading active | Target: &pound;200-500/day';
+    }
+    document.getElementById('status-bar').innerHTML = `<div class="status-bar ${statusClass}">${statusText}</div>`;
+}
+
+// ─── Tabs ─────────────────────────────────────────────────
+document.getElementById('tabs').addEventListener('click', e => {
+    if (!e.target.classList.contains('tab')) return;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    e.target.classList.add('active');
+    document.getElementById(e.target.dataset.tab).classList.add('active');
+});
+
+// ─── Recommendations ─────────────────────────────────────
+function renderRecommendations() {
+    const el = document.getElementById('recommendations');
+    const buys = DATA.decisions.filter(d => d.action === 'BUY').length;
+    const sells = DATA.decisions.filter(d => d.action === 'SELL').length;
+    const holds = DATA.decisions.filter(d => d.action === 'HOLD').length;
+
+    let html = `<p style="margin-bottom:16px;color:#888">${buys} BUY | ${sells} SELL | ${holds} HOLD</p>`;
+
+    DATA.decisions.forEach((d, i) => {
+        const icon = d.action === 'BUY' ? '&#9650;' : d.action === 'SELL' ? '&#9660;' : '&#9679;';
+        const rr = d.stop_loss && d.price > d.stop_loss ? ((d.take_profit - d.price) / (d.price - d.stop_loss)).toFixed(1) : '0.0';
+        html += `
+        <div class="decision-card">
+            <div class="decision-header" onclick="this.nextElementSibling.classList.toggle('open')">
+                <div>
+                    <span class="action-badge action-${d.action}">${icon} ${d.action}</span>
+                    <strong style="margin-left:12px">${d.ticker}</strong>
+                    <span style="color:#888;margin-left:8px">${d.name}</span>
+                </div>
+                <div style="text-align:right">
+                    <span style="font-size:18px;font-weight:700">${d.combined_score}</span><span style="color:#888">/10</span>
+                    <span style="margin-left:16px">&pound;${d.price.toLocaleString()}</span>
+                </div>
+            </div>
+            <div class="decision-detail">
+                <div class="score-bar">
+                    <div class="score-item"><div class="score-value" style="color:#4a9eff">${d.claude_score}</div><div class="score-label">Claude</div></div>
+                    <div class="score-item"><div class="score-value" style="color:#a855f7">${d.grok_score}</div><div class="score-label">Grok</div></div>
+                    <div class="score-item"><div class="score-value" style="color:#00d26a">${d.combined_score}</div><div class="score-label">Combined</div></div>
+                    ${d.action === 'BUY' ? `
+                    <div class="score-item"><div class="score-value">&pound;${d.stop_loss.toLocaleString()}</div><div class="score-label">Stop-Loss</div></div>
+                    <div class="score-item"><div class="score-value">&pound;${d.take_profit.toLocaleString()}</div><div class="score-label">Take-Profit</div></div>
+                    <div class="score-item"><div class="score-value">&pound;${d.position_size.toLocaleString()}</div><div class="score-label">Position Size</div></div>
+                    <div class="score-item"><div class="score-value">${rr}:1</div><div class="score-label">Risk/Reward</div></div>
+                    ` : ''}
+                </div>
+                <div class="reasoning-box">${d.reasoning}</div>
+            </div>
+        </div>`;
+    });
+    el.innerHTML = html;
+}
+
+// ─── Trade History ────────────────────────────────────────
+function renderHistory() {
+    let html = '<table><thead><tr><th>ID</th><th>Time</th><th>Ticker</th><th>Action</th><th>Price</th><th>Value</th><th>Claude</th><th>Grok</th><th>P&L</th><th>Status</th></tr></thead><tbody>';
+    DATA.trades.forEach(t => {
+        const pnlClass = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
+        html += `<tr>
+            <td>${t.id}</td><td>${t.timestamp}</td><td><strong>${t.ticker}</strong></td>
+            <td><span class="action-badge action-${t.action}">${t.action}</span></td>
+            <td>&pound;${t.price.toLocaleString()}</td><td>&pound;${t.value.toLocaleString()}</td>
+            <td>${t.claude_score}</td><td>${t.grok_score}</td>
+            <td class="${pnlClass}">${t.pnl ? '&pound;' + (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) : '-'}</td>
+            <td>${t.status}</td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('history').innerHTML = html;
+}
+
+// ─── Positions ────────────────────────────────────────────
+function renderPositions() {
+    const openBuys = DATA.trades.filter(t => t.action === 'BUY' && t.status === 'open').slice(0, 5);
+    if (!openBuys.length) {
+        document.getElementById('positions').innerHTML = '<p style="color:#888;padding:20px">No open positions. Click "Run Market Scan" to generate trades.</p>';
+        return;
+    }
+    let html = '<table><thead><tr><th>Ticker</th><th>Name</th><th>Entry Price</th><th>Value</th><th>Claude</th><th>Grok</th><th>Status</th></tr></thead><tbody>';
+    openBuys.forEach(t => {
+        html += `<tr><td><strong>${t.ticker}</strong></td><td>${t.name}</td><td>&pound;${t.price.toLocaleString()}</td><td>&pound;${t.value.toLocaleString()}</td><td>${t.claude_score}</td><td>${t.grok_score}</td><td>${t.status}</td></tr>`;
+    });
+    html += '</tbody></table>';
+
+    html += '<div id="position-pie" style="height:350px;margin-top:20px"></div>';
+    document.getElementById('positions').innerHTML = html;
+
+    Plotly.newPlot('position-pie', [{
+        values: openBuys.map(t => t.value),
+        labels: openBuys.map(t => t.ticker),
+        type: 'pie',
+        marker: { colors: ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd'] },
+        textinfo: 'label+percent',
+        textfont: { color: '#fff' },
+    }], {
+        paper_bgcolor: '#1a1d24', plot_bgcolor: '#1a1d24',
+        font: { color: '#fafafa' },
+        margin: { t: 30, b: 30, l: 30, r: 30 },
+        title: { text: 'Position Allocation', font: { size: 14 } },
+        showlegend: false,
+    }, { responsive: true });
+}
+
+// ─── Benchmark ────────────────────────────────────────────
+function renderBenchmark() {
+    const el = document.getElementById('benchmark');
+
+    el.innerHTML = `
+        <div class="chart-container"><div id="bench-chart" style="height:400px"></div></div>
+        <div class="period-table" id="period-table"></div>
+        <h3 style="margin-top:24px;margin-bottom:12px">Risk Metrics</h3>
+        <div class="risk-grid" id="risk-grid"></div>
+    `;
+
+    const c = DATA.chart;
+    const portNorm = c.portfolio.map(v => v / c.portfolio[0] * 100);
+    const benchNorm = c.benchmark.map(v => v / c.benchmark[0] * 100);
+
+    Plotly.newPlot('bench-chart', [
+        { x: c.dates, y: portNorm, name: 'Your Portfolio', line: { color: '#1f77b4', width: 2 } },
+        { x: c.dates, y: benchNorm, name: 'VUSA (S&P 500)', line: { color: '#ff7f0e', width: 2 } },
+    ], {
+        paper_bgcolor: '#1a1d24', plot_bgcolor: '#0e1117',
+        font: { color: '#fafafa' },
+        xaxis: { gridcolor: '#262730' },
+        yaxis: { gridcolor: '#262730', title: 'Normalised (100 = start)' },
+        legend: { x: 0, y: 1 },
+        margin: { t: 40, b: 40 },
+        title: { text: 'Portfolio vs Benchmark (60 Days)', font: { size: 14 } },
+        hovermode: 'x unified',
+    }, { responsive: true });
+
+    let tableHtml = '<table><thead><tr><th>Period</th><th>Portfolio</th><th>VUSA (S&P 500)</th><th>Alpha</th><th>P&L</th></tr></thead><tbody>';
+    for (const [period, vals] of Object.entries(DATA.period_returns)) {
+        const alpha = (vals.portfolio - vals.benchmark).toFixed(2);
+        const pnl = (20000 * vals.portfolio / 100).toFixed(0);
+        const alphaClass = alpha >= 0 ? 'positive' : 'negative';
+        tableHtml += `<tr>
+            <td><strong>${period}</strong></td>
+            <td class="${vals.portfolio >= 0 ? 'positive' : 'negative'}">+${vals.portfolio}%</td>
+            <td class="${vals.benchmark >= 0 ? 'positive' : 'negative'}">+${vals.benchmark}%</td>
+            <td class="${alphaClass}">${alpha >= 0 ? '+' : ''}${alpha}%</td>
+            <td class="${pnl >= 0 ? 'positive' : 'negative'}">&pound;${pnl >= 0 ? '+' : ''}${pnl}</td>
+        </tr>`;
+    }
+    tableHtml += '</tbody></table>';
+    document.getElementById('period-table').innerHTML = tableHtml;
+
+    const rm = DATA.risk_metrics;
+    document.getElementById('risk-grid').innerHTML = `
+        <div class="metric-card"><div class="label">Sharpe Ratio</div><div class="value">${rm.sharpe_ratio}</div></div>
+        <div class="metric-card"><div class="label">Max Drawdown</div><div class="value negative">${rm.max_drawdown}%</div></div>
+        <div class="metric-card"><div class="label">Win Rate</div><div class="value">${rm.win_rate}%</div></div>
+        <div class="metric-card"><div class="label">Avg Daily Return</div><div class="value positive">+${rm.avg_daily_return}%</div></div>
+        <div class="metric-card"><div class="label">Annual Volatility</div><div class="value">${rm.volatility}%</div></div>
+    `;
+}
+
+// ─── AI Analysis ──────────────────────────────────────────
+function renderAnalysis() {
+    const el = document.getElementById('analysis');
+    const nonHold = DATA.decisions.filter(d => d.action !== 'HOLD');
+
+    // Score comparison chart
+    let html = '<div class="chart-container"><div id="ai-scores-chart" style="height:350px"></div></div>';
+
+    nonHold.forEach(d => {
+        html += `
+        <div class="decision-card" style="margin-bottom:12px">
+            <div class="decision-header" onclick="this.nextElementSibling.classList.toggle('open')">
+                <div><span class="action-badge action-${d.action}">${d.action}</span> <strong style="margin-left:8px">${d.ticker}</strong> <span style="color:#888">${d.name}</span></div>
+                <div>Claude ${d.claude_score} | Grok ${d.grok_score} | Combined ${d.combined_score}</div>
+            </div>
+            <div class="decision-detail">
+                <div class="ai-comparison">
+                    <div class="ai-box">
+                        <h4 style="color:#4a9eff">Claude (Fundamentals/Risk)</h4>
+                        <div class="reasoning-box" style="margin-top:8px;font-size:11px">${d.claude_reasoning}</div>
+                        <div class="factors-json">${JSON.stringify(d.claude_factors, null, 2)}</div>
+                    </div>
+                    <div class="ai-box">
+                        <h4 style="color:#a855f7">Grok (Sentiment/Momentum)</h4>
+                        <div class="reasoning-box" style="margin-top:8px;font-size:11px">${d.grok_reasoning}</div>
+                        <div class="factors-json">${JSON.stringify(d.grok_factors, null, 2)}</div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    });
+    el.innerHTML = html;
+
+    if (nonHold.length) {
+        Plotly.newPlot('ai-scores-chart', [
+            { x: nonHold.map(d=>d.ticker), y: nonHold.map(d=>d.claude_score), name:'Claude', type:'bar', marker:{color:'#4a9eff'} },
+            { x: nonHold.map(d=>d.ticker), y: nonHold.map(d=>d.grok_score), name:'Grok', type:'bar', marker:{color:'#a855f7'} },
+            { x: nonHold.map(d=>d.ticker), y: nonHold.map(d=>d.combined_score), name:'Combined', type:'bar', marker:{color:'#00d26a'} },
+        ], {
+            barmode: 'group',
+            paper_bgcolor: '#1a1d24', plot_bgcolor: '#0e1117',
+            font: { color: '#fafafa' }, yaxis: { title: 'Score (0-10)', gridcolor: '#262730' },
+            xaxis: { gridcolor: '#262730' },
+            margin: { t: 40, b: 40 },
+            title: { text: 'AI Scores — Non-HOLD Recommendations', font: { size: 14 } },
+        }, { responsive: true });
+    }
+}
+
+// ─── Init ─────────────────────────────────────────────────
+document.getElementById('gen-time').textContent = DATA.generated_at;
+renderMetrics();
+renderRecommendations();
+renderPositions();
+renderHistory();
+renderBenchmark();
+renderAnalysis();
+</script>
+</body>
+</html>

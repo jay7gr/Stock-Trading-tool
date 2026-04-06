@@ -27,9 +27,11 @@ SCAN_INTERVAL_MINUTES = 15           # How often to scan for signals
 BENCHMARK_TICKER = "VUSA.L"          # Vanguard S&P 500 ETF (LSE)
 
 # ─── Stock Universe ──────────────────────────────────────────────────
-# Liquid LSE stocks + ETFs suitable for short-term trading
+# Tier 1: Full universe scanned via yfinance (free, unlimited)
+# Tier 2: Top candidates get detailed analysis via Twelve Data
+
 STOCK_UNIVERSE = [
-    # FTSE 100 high-liquidity
+    # FTSE 100 — Full index
     "SHEL.L",   # Shell
     "AZN.L",    # AstraZeneca
     "HSBA.L",   # HSBC
@@ -50,6 +52,65 @@ STOCK_UNIVERSE = [
     "MNG.L",    # M&G
     "GLEN.L",   # Glencore
     "BHP.L",    # BHP Group
+    "CPG.L",    # Compass Group
+    "EXPN.L",   # Experian
+    "IMB.L",    # Imperial Brands
+    "PRU.L",    # Prudential
+    "ABF.L",    # Associated British Foods
+    "CRH.L",    # CRH
+    "RKT.L",    # Reckitt
+    "TSCO.L",   # Tesco
+    "BATS.L",   # British American Tobacco
+    "STAN.L",   # Standard Chartered
+    "NWG.L",    # NatWest
+    "AHT.L",    # Ashtead
+    "SMDS.L",   # DS Smith
+    "IHG.L",    # InterContinental Hotels
+    "WTB.L",    # Whitbread
+    "SSE.L",    # SSE
+    "SVT.L",    # Severn Trent
+    "SGRO.L",   # Segro
+    "LAND.L",   # Land Securities
+    "BRBY.L",   # Burberry
+    "JD.L",     # JD Sports
+    "FRAS.L",   # Frasers Group
+    "ENT.L",    # Entain
+    "AV.L",     # Aviva
+    "LGEN.L",   # Legal & General
+    "HLMA.L",   # Halma
+    "SMT.L",    # Scottish Mortgage IT
+    "WPP.L",    # WPP
+    "INF.L",    # Informa
+    "AUTO.L",   # Auto Trader
+    "MNDI.L",   # Mondi
+    "PSON.L",   # Pearson
+    "RMV.L",    # Rightmove
+    "SPX.L",    # Spirax Group
+    "BNZL.L",   # Bunzl
+    "SDR.L",    # Schroders
+    "HIK.L",    # Hikma Pharmaceuticals
+    "DARK.L",   # Darktrace
+    "WEIR.L",   # Weir Group
+    "ITRK.L",   # Intertek
+    "SMIN.L",   # Smiths Group
+
+    # FTSE 250 — High volume picks
+    "BDEV.L",   # Barratt Developments
+    "TW.L",     # Taylor Wimpey
+    "RR.L",     # Rolls-Royce
+    "EZJ.L",    # easyJet
+    "IAG.L",    # IAG (British Airways)
+    "WIZZ.L",   # Wizz Air
+    "FLTR.L",   # Flutter Entertainment
+    "OCDO.L",   # Ocado
+    "THG.L",    # THG
+    "DPLM.L",   # Diploma
+    "KGF.L",    # Kingfisher
+    "BME.L",    # B&M European Value
+    "SBRY.L",   # Sainsbury's
+    "MRO.L",    # Melrose Industries
+    "MGGT.L",   # Meggitt
+    "OSB.L",    # OSB Group
 
     # Popular ETFs on LSE
     "VUSA.L",   # Vanguard S&P 500
@@ -57,7 +118,15 @@ STOCK_UNIVERSE = [
     "ISF.L",    # iShares Core FTSE 100
     "SWDA.L",   # iShares Core MSCI World
     "VUKE.L",   # Vanguard FTSE 100
+    "VMID.L",   # Vanguard FTSE 250
+    "IUKD.L",   # iShares UK Dividend
+    "CSP1.L",   # iShares Core S&P 500
+    "EQQQ.L",   # Invesco NASDAQ 100
+    "IEEM.L",   # iShares Emerging Markets
 ]
+
+# How many candidates to promote from Tier 1 to Tier 2
+TIER1_TOP_CANDIDATES = 15
 
 # Twelve Data uses different symbol format (no .L suffix, exchange specified)
 TWELVE_DATA_SYMBOLS = {

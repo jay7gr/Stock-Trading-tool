@@ -298,3 +298,167 @@ def scan_universe(tickers: list[str]) -> dict[str, dict]:
             "info": get_stock_info(ticker),
         }
     return results
+
+
+# ─── Two-Tier Scanning ──────────────────────────────────────────────
+
+def tier1_quick_scan(tickers: list[str]) -> list[dict]:
+    """
+    Tier 1: Rapid yfinance scan of the full universe (~90 stocks).
+    Returns a ranked list of candidates with quick scores.
+    Uses only yfinance (free, unlimited) — no Twelve Data credits spent.
+    """
+    print(f"[Tier 1] Quick-scanning {len(tickers)} stocks via yfinance...")
+    candidates = []
+
+    for ticker in tickers:
+        try:
+            df = _yfinance_get_data(ticker, period="3mo", interval="1d")
+            if df is None or df.empty or len(df) < 20:
+                continue
+
+            df = compute_technicals(df)
+            latest = df.iloc[-1]
+            price = float(df["Close"].iloc[-1])
+
+            # Quick scoring for ranking
+            quick_score = 0
+            reasons = []
+
+            # 1. RSI — favour 30-65 (not overbought, room to run)
+            rsi = latest.get("RSI", 50)
+            if 30 <= rsi <= 65:
+                quick_score += 2
+                reasons.append(f"RSI {rsi:.0f} (healthy)")
+            elif rsi < 30:
+                quick_score += 1  # Oversold bounce candidate
+                reasons.append(f"RSI {rsi:.0f} (oversold)")
+            elif rsi > 75:
+                quick_score -= 2
+                reasons.append(f"RSI {rsi:.0f} (overbought)")
+
+            # 2. MACD direction
+            macd_hist = latest.get("MACD_Hist", 0)
+            if not pd.isna(macd_hist):
+                prev_macd = df["MACD_Hist"].iloc[-2] if len(df) >= 2 else 0
+                if not pd.isna(prev_macd) and macd_hist > prev_macd:
+                    quick_score += 2
+                    reasons.append("MACD improving")
+                elif macd_hist > 0:
+                    quick_score += 1
+                    reasons.append("MACD positive")
+                elif macd_hist < prev_macd:
+                    quick_score -= 1
+
+            # 3. Price vs SMA20 (trend filter)
+            sma20 = latest.get("SMA_20", price)
+            if not pd.isna(sma20) and price > sma20:
+                quick_score += 1
+                reasons.append("Above SMA20")
+            elif not pd.isna(sma20):
+                quick_score -= 1
+
+            # 4. Volume spike (institutional interest)
+            vol_ratio = latest.get("Vol_Ratio", 1)
+            if not pd.isna(vol_ratio) and vol_ratio > 1.3:
+                quick_score += 1
+                reasons.append(f"Volume {vol_ratio:.1f}x avg")
+
+            # 5. Recent momentum (5-day ROC)
+            roc5 = latest.get("ROC_5", 0)
+            if not pd.isna(roc5) and roc5 > 2:
+                quick_score += 1
+                reasons.append(f"5d +{roc5:.1f}%")
+            elif not pd.isna(roc5) and roc5 < -5:
+                quick_score -= 1
+
+            # 6. Bollinger Band position (mean reversion opportunity)
+            bb_lower = latest.get("BB_Lower", 0)
+            if not pd.isna(bb_lower) and price <= bb_lower:
+                quick_score += 2
+                reasons.append("At lower Bollinger Band")
+
+            candidates.append({
+                "ticker": ticker,
+                "price": price,
+                "quick_score": quick_score,
+                "rsi": rsi if not pd.isna(rsi) else 50,
+                "macd_hist": macd_hist if not pd.isna(macd_hist) else 0,
+                "vol_ratio": vol_ratio if not pd.isna(vol_ratio) else 1,
+                "reasons": reasons,
+                "df": df,  # Keep for Tier 2 to avoid re-fetching
+            })
+
+        except Exception as e:
+            print(f"[Tier 1] Error scanning {ticker}: {e}")
+            continue
+
+    # Sort by quick_score descending
+    candidates.sort(key=lambda c: c["quick_score"], reverse=True)
+    print(f"[Tier 1] Scanned {len(candidates)} stocks successfully")
+
+    # Log top candidates
+    for i, c in enumerate(candidates[:config.TIER1_TOP_CANDIDATES]):
+        print(f"  #{i+1} {c['ticker']}: score={c['quick_score']}, "
+              f"RSI={c['rsi']:.0f}, {', '.join(c['reasons'][:3])}")
+
+    return candidates
+
+
+def tier2_deep_scan(candidates: list[dict],
+                    top_n: int = None) -> dict[str, dict]:
+    """
+    Tier 2: Deep analysis on top candidates from Tier 1.
+    Uses Twelve Data if available (spends API credits only on shortlist).
+    Falls back to yfinance data already fetched in Tier 1.
+
+    Returns dict of ticker -> {price, df, info} ready for strategy/AI analysis.
+    """
+    top_n = top_n or config.TIER1_TOP_CANDIDATES
+    shortlist = candidates[:top_n]
+    print(f"\n[Tier 2] Deep analysis on top {len(shortlist)} candidates...")
+
+    td = _get_td_client()
+    results = {}
+
+    for candidate in shortlist:
+        ticker = candidate["ticker"]
+        price = candidate["price"]
+
+        # Try Twelve Data for higher-quality data
+        df = None
+        if td:
+            try:
+                df = td.get_time_series(ticker, interval="1day", outputsize=60)
+                if df is not None and not df.empty:
+                    df = compute_technicals(df)
+                    price = float(df["Close"].iloc[-1])
+                    print(f"  [Tier 2] {ticker}: Twelve Data ✓")
+                else:
+                    df = None
+            except Exception as e:
+                print(f"  [Tier 2] Twelve Data failed for {ticker}: {e}")
+                df = None
+
+        # Fall back to yfinance data from Tier 1
+        if df is None:
+            df = candidate.get("df")
+            if df is not None:
+                print(f"  [Tier 2] {ticker}: using yfinance data from Tier 1")
+
+        if df is None or df.empty:
+            continue
+
+        # Get fundamental info (always via yfinance — free)
+        info = get_stock_info(ticker)
+
+        results[ticker] = {
+            "price": price,
+            "df": df,
+            "info": info,
+            "tier1_score": candidate["quick_score"],
+            "tier1_reasons": candidate["reasons"],
+        }
+
+    print(f"[Tier 2] Got detailed data for {len(results)} stocks")
+    return results

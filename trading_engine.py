@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 import config
-from market_data import scan_universe, get_current_price
+from market_data import scan_universe, get_current_price, tier1_quick_scan, tier2_deep_scan
 from strategies import generate_all_signals
 from ai_analyst import claude_analyse, grok_analyse
 from consensus import make_decision, TradeDecision
@@ -70,10 +70,18 @@ class TradingEngine:
             self.risk.record_trade(trade.pnl)
             self.notifier.stop_hit(trade.ticker, trade.pnl, trade.reasoning)
 
-        # Scan universe
-        print(f"Scanning {len(config.STOCK_UNIVERSE)} stocks...")
-        universe_data = scan_universe(config.STOCK_UNIVERSE)
-        print(f"Got data for {len(universe_data)} stocks")
+        # Two-tier scanning: yfinance broad → Twelve Data deep
+        print(f"\n── Tier 1: Quick scan of {len(config.STOCK_UNIVERSE)} stocks ──")
+        tier1_candidates = tier1_quick_scan(config.STOCK_UNIVERSE)
+
+        if not tier1_candidates:
+            print("[Engine] No valid candidates from Tier 1 scan")
+            self.last_scan_time = datetime.now().isoformat()
+            return []
+
+        print(f"\n── Tier 2: Deep analysis on top {config.TIER1_TOP_CANDIDATES} ──")
+        universe_data = tier2_deep_scan(tier1_candidates, config.TIER1_TOP_CANDIDATES)
+        print(f"Got detailed data for {len(universe_data)} stocks")
 
         decisions = []
         available_capital = self.emulator.cash

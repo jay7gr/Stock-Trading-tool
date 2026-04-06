@@ -1,50 +1,152 @@
 """
-Market Data Module — fetches real price data, technicals, and fundamentals.
-Uses yfinance for free LSE/global market data.
+Market Data Module — fetches real price data and technical indicators.
+
+Primary:  Twelve Data API (free, reliable, 800 req/day)
+Fallback: yfinance (free, less reliable)
 """
 
-import yfinance as yf
+import time
+import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional
 
+import config
 
-def get_stock_data(ticker: str, period: str = "3mo", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch OHLCV data for a ticker."""
+
+# ─── Twelve Data API ──────────────────────────────────────────────────
+
+class TwelveDataClient:
+    """Free tier: 800 requests/day, 8 per minute."""
+
+    BASE_URL = "https://api.twelvedata.com"
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or config.TWELVE_DATA_API_KEY
+        self.requests_today = 0
+        self.last_request_time = 0
+
+    def _rate_limit(self):
+        """Respect 8 requests/minute limit."""
+        now = time.time()
+        elapsed = now - self.last_request_time
+        if elapsed < 7.5:  # ~8 req/min = 1 per 7.5s
+            time.sleep(7.5 - elapsed)
+        self.last_request_time = time.time()
+
+    def _request(self, endpoint: str, params: dict) -> Optional[dict]:
+        if not self.api_key:
+            return None
+        if self.requests_today >= 780:  # Leave buffer
+            print("[TwelveData] Daily quota nearly exhausted, skipping")
+            return None
+
+        self._rate_limit()
+        params["apikey"] = self.api_key
+
+        try:
+            resp = requests.get(f"{self.BASE_URL}/{endpoint}", params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            self.requests_today += 1
+
+            if "status" in data and data["status"] == "error":
+                print(f"[TwelveData] API error: {data.get('message', 'unknown')}")
+                return None
+            return data
+        except Exception as e:
+            print(f"[TwelveData] Request failed: {e}")
+            return None
+
+    def get_time_series(self, symbol: str, interval: str = "1day",
+                        outputsize: int = 60) -> Optional[pd.DataFrame]:
+        """Fetch OHLCV time series data."""
+        td_symbol = config.TWELVE_DATA_SYMBOLS.get(symbol, symbol.replace(".L", ""))
+        data = self._request("time_series", {
+            "symbol": td_symbol,
+            "exchange": config.TWELVE_DATA_EXCHANGE,
+            "interval": interval,
+            "outputsize": outputsize,
+            "format": "JSON",
+        })
+        if not data or "values" not in data:
+            return None
+
+        rows = data["values"]
+        df = pd.DataFrame(rows)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime").sort_index()
+
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.rename(columns={
+            "open": "Open", "high": "High", "low": "Low",
+            "close": "Close", "volume": "Volume",
+        })
+        return df
+
+    def get_price(self, symbol: str) -> Optional[float]:
+        """Get latest price for a symbol."""
+        td_symbol = config.TWELVE_DATA_SYMBOLS.get(symbol, symbol.replace(".L", ""))
+        data = self._request("price", {
+            "symbol": td_symbol,
+            "exchange": config.TWELVE_DATA_EXCHANGE,
+        })
+        if data and "price" in data:
+            return float(data["price"])
+        return None
+
+    def get_quote(self, symbol: str) -> Optional[dict]:
+        """Get full quote (price, volume, change, etc.)."""
+        td_symbol = config.TWELVE_DATA_SYMBOLS.get(symbol, symbol.replace(".L", ""))
+        data = self._request("quote", {
+            "symbol": td_symbol,
+            "exchange": config.TWELVE_DATA_EXCHANGE,
+        })
+        return data
+
+    def get_indicator(self, symbol: str, indicator: str,
+                      interval: str = "1day", **kwargs) -> Optional[dict]:
+        """Get a specific technical indicator calculated server-side."""
+        td_symbol = config.TWELVE_DATA_SYMBOLS.get(symbol, symbol.replace(".L", ""))
+        params = {
+            "symbol": td_symbol,
+            "exchange": config.TWELVE_DATA_EXCHANGE,
+            "interval": interval,
+            **kwargs,
+        }
+        return self._request(indicator, params)
+
+
+# ─── yfinance Fallback ────────────────────────────────────────────────
+
+def _yfinance_get_data(ticker: str, period: str = "3mo",
+                       interval: str = "1d") -> Optional[pd.DataFrame]:
+    """Fallback: fetch data via yfinance."""
     try:
+        import yfinance as yf
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         if df.empty:
             return None
         return df
     except Exception as e:
-        print(f"[MarketData] Error fetching {ticker}: {e}")
+        print(f"[yfinance] Error fetching {ticker}: {e}")
         return None
 
 
-def get_intraday_data(ticker: str, period: str = "5d", interval: str = "15m") -> Optional[pd.DataFrame]:
-    """Fetch intraday data for short-term signals."""
+def _yfinance_get_price(ticker: str) -> Optional[float]:
     try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period=period, interval=interval)
-        if df.empty:
-            return None
-        return df
-    except Exception as e:
-        print(f"[MarketData] Error fetching intraday {ticker}: {e}")
-        return None
-
-
-def get_current_price(ticker: str) -> Optional[float]:
-    """Get the latest available price for a ticker."""
-    try:
+        import yfinance as yf
         stock = yf.Ticker(ticker)
         info = stock.fast_info
         return float(info.get("lastPrice", 0) or info.get("previousClose", 0))
     except Exception:
         try:
-            df = get_stock_data(ticker, period="5d", interval="1d")
+            df = _yfinance_get_data(ticker, period="5d")
             if df is not None and not df.empty:
                 return float(df["Close"].iloc[-1])
         except Exception:
@@ -52,11 +154,72 @@ def get_current_price(ticker: str) -> Optional[float]:
     return None
 
 
+def _yfinance_get_info(ticker: str) -> dict:
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        return {
+            "name": info.get("shortName", ticker),
+            "sector": info.get("sector", "Unknown"),
+            "market_cap": info.get("marketCap", 0),
+            "pe_ratio": info.get("trailingPE"),
+            "dividend_yield": info.get("dividendYield"),
+            "52w_high": info.get("fiftyTwoWeekHigh"),
+            "52w_low": info.get("fiftyTwoWeekLow"),
+            "avg_volume": info.get("averageVolume", 0),
+            "beta": info.get("beta", 1.0),
+        }
+    except Exception as e:
+        return {"name": ticker, "error": str(e)}
+
+
+# ─── Unified Interface ───────────────────────────────────────────────
+
+# Global Twelve Data client
+_td_client: Optional[TwelveDataClient] = None
+
+
+def _get_td_client() -> Optional[TwelveDataClient]:
+    global _td_client
+    if _td_client is None and config.TWELVE_DATA_API_KEY:
+        _td_client = TwelveDataClient()
+    return _td_client
+
+
+def get_stock_data(ticker: str, period: str = "3mo",
+                   interval: str = "1d") -> Optional[pd.DataFrame]:
+    """Fetch OHLCV data. Tries Twelve Data first, falls back to yfinance."""
+    td = _get_td_client()
+    if td:
+        outputsize = {"1mo": 22, "3mo": 60, "6mo": 126, "1y": 252}.get(period, 60)
+        td_interval = {"1d": "1day", "1h": "1h", "15m": "15min"}.get(interval, "1day")
+        df = td.get_time_series(ticker, interval=td_interval, outputsize=outputsize)
+        if df is not None and not df.empty:
+            return df
+        print(f"[MarketData] Twelve Data failed for {ticker}, trying yfinance")
+
+    return _yfinance_get_data(ticker, period=period, interval=interval)
+
+
+def get_current_price(ticker: str) -> Optional[float]:
+    """Get latest price. Tries Twelve Data first, falls back to yfinance."""
+    td = _get_td_client()
+    if td:
+        price = td.get_price(ticker)
+        if price:
+            return price
+
+    return _yfinance_get_price(ticker)
+
+
+def get_stock_info(ticker: str) -> dict:
+    """Get fundamental info. Uses yfinance (Twelve Data free tier limited)."""
+    return _yfinance_get_info(ticker)
+
+
 def compute_technicals(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add technical indicators to a price DataFrame.
-    Returns the same DataFrame with new columns added.
-    """
+    """Add technical indicators to a price DataFrame."""
     if df is None or df.empty or len(df) < 20:
         return df
 
@@ -91,7 +254,7 @@ def compute_technicals(df: pd.DataFrame) -> pd.DataFrame:
     df["BB_Lower"] = df["BB_Mid"] - 2 * bb_std
     df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / df["BB_Mid"]
 
-    # Average True Range (ATR) — volatility measure
+    # Average True Range (ATR)
     tr1 = high - low
     tr2 = (high - close.shift()).abs()
     tr3 = (low - close.shift()).abs()
@@ -115,37 +278,13 @@ def compute_technicals(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def get_stock_info(ticker: str) -> dict:
-    """Get fundamental info for a stock."""
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        return {
-            "name": info.get("shortName", ticker),
-            "sector": info.get("sector", "Unknown"),
-            "market_cap": info.get("marketCap", 0),
-            "pe_ratio": info.get("trailingPE", None),
-            "dividend_yield": info.get("dividendYield", None),
-            "52w_high": info.get("fiftyTwoWeekHigh", None),
-            "52w_low": info.get("fiftyTwoWeekLow", None),
-            "avg_volume": info.get("averageVolume", 0),
-            "beta": info.get("beta", 1.0),
-        }
-    except Exception as e:
-        return {"name": ticker, "error": str(e)}
-
-
 def get_benchmark_data(period: str = "1y") -> Optional[pd.DataFrame]:
-    """Fetch VUSA (S&P 500 ETF) benchmark data."""
-    from config import BENCHMARK_TICKER
-    return get_stock_data(BENCHMARK_TICKER, period=period)
+    """Fetch VUSA benchmark data."""
+    return get_stock_data(config.BENCHMARK_TICKER, period=period)
 
 
 def scan_universe(tickers: list[str]) -> dict[str, dict]:
-    """
-    Scan all tickers in the universe and return a dict of
-    ticker -> {price, technicals_df, info}.
-    """
+    """Scan all tickers and return dict of ticker -> {price, df, info}."""
     results = {}
     for ticker in tickers:
         df = get_stock_data(ticker, period="3mo", interval="1d")

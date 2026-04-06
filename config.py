@@ -1,6 +1,6 @@
 """
 Configuration for the Automated Trading Tool.
-All settings in one place — adjust targets, risk limits, and API keys here.
+All settings in one place — API keys, targets, risk limits.
 """
 
 # ─── Capital & Targets ───────────────────────────────────────────────
@@ -59,28 +59,43 @@ STOCK_UNIVERSE = [
     "VUKE.L",   # Vanguard FTSE 100
 ]
 
-# ─── AI Configuration ────────────────────────────────────────────────
-# Set these to enable live AI analysis (leave None for emulated mode)
-CLAUDE_API_KEY = None    # Set to your Anthropic API key
-GROK_API_KEY = None      # Set to your xAI API key
+# Twelve Data uses different symbol format (no .L suffix, exchange specified)
+TWELVE_DATA_SYMBOLS = {
+    "SHEL.L": "SHEL", "AZN.L": "AZN", "HSBA.L": "HSBA", "ULVR.L": "ULVR",
+    "BP.L": "BP.", "GSK.L": "GSK", "RIO.L": "RIO", "LSEG.L": "LSEG",
+    "REL.L": "REL", "DGE.L": "DGE", "BA.L": "BA.", "LLOY.L": "LLOY",
+    "BARC.L": "BARC", "VOD.L": "VOD", "NG.L": "NG.", "AAL.L": "AAL",
+    "ANTO.L": "ANTO", "MNG.L": "MNG", "GLEN.L": "GLEN", "BHP.L": "BHP",
+    "VUSA.L": "VUSA", "VWRL.L": "VWRL", "ISF.L": "ISF", "SWDA.L": "SWDA",
+    "VUKE.L": "VUKE",
+}
+TWELVE_DATA_EXCHANGE = "LSE"
 
-# AI model settings
+# ─── API Keys ────────────────────────────────────────────────────────
+# Market data
+TWELVE_DATA_API_KEY = None           # Free: twelvedata.com
+
+# AI analysis (Option B: fully automated)
+CLAUDE_API_KEY = None                # console.anthropic.com
+GROK_API_KEY = None                  # console.x.ai
+
+# Broker
+T212_API_KEY = None                  # Trading 212 app → Settings → API
+T212_BASE_URL = "https://live.trading212.com/api/v0"
+
+# Notifications
+TELEGRAM_BOT_TOKEN = None            # @BotFather on Telegram
+TELEGRAM_CHAT_ID = None              # Your chat ID
+
+# ─── AI Model Settings ───────────────────────────────────────────────
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 GROK_MODEL = "grok-3"
 
-# Consensus mode: "agreement", "weighted", "specialised"
-CONSENSUS_MODE = "specialised"
+# ─── Consensus Settings ──────────────────────────────────────────────
+CONSENSUS_MODE = "specialised"       # "agreement", "weighted", "specialised"
 CLAUDE_WEIGHT = 0.6
 GROK_WEIGHT = 0.4
-MIN_CONSENSUS_SCORE = 7.0  # Out of 10 — minimum to execute
+MIN_CONSENSUS_SCORE = 7.0            # Out of 10 — minimum to execute
 
-# ─── Emulator Mode ───────────────────────────────────────────────────
-EMULATOR_MODE = True  # Set False when connected to Trading 212
-
-# ─── Trading 212 (for future live trading) ────────────────────────────
-T212_API_KEY = None
-T212_BASE_URL = "https://live.trading212.com/api/v0"
-
-# ─── Notifications ───────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = None
-TELEGRAM_CHAT_ID = None
+# ─── Mode ─────────────────────────────────────────────────────────────
+EMULATOR_MODE = True                 # Set False when connected to Trading 212

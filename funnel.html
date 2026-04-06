@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Trading Tool — System Architecture</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e0e0e0; padding: 40px 20px; }
+.container { max-width: 900px; margin: 0 auto; }
+h1 { text-align: center; font-size: 28px; margin-bottom: 8px; color: #fff; }
+.subtitle { text-align: center; color: #666; margin-bottom: 50px; font-size: 14px; }
+
+/* Funnel stages */
+.stage { position: relative; margin-bottom: 0; }
+.stage-box { border-radius: 12px; padding: 24px 28px; position: relative; }
+.stage-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; font-weight: 600; }
+.stage-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+.stage-desc { font-size: 13px; line-height: 1.6; color: #aaa; }
+.stage-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+.stage-detail-item { background: rgba(0,0,0,0.3); border-radius: 8px; padding: 10px 14px; font-size: 12px; }
+.stage-detail-item .label { color: #888; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stage-detail-item .value { font-weight: 600; margin-top: 2px; }
+.cost-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+.free { background: #1a3a2a; color: #00d26a; }
+.existing { background: #1a2a3a; color: #4a9eff; }
+.optional { background: #3a2a1a; color: #ff9f43; }
+
+/* Arrow connector */
+.arrow { text-align: center; padding: 8px 0; }
+.arrow svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3)); }
+
+/* Stage colors */
+.s1 .stage-box { background: linear-gradient(135deg, #1a1f2e, #1e2640); border: 1px solid #2a3550; }
+.s1 .stage-label { color: #4a9eff; }
+.s2 .stage-box { background: linear-gradient(135deg, #1a2a1e, #1e3528); border: 1px solid #2a4535; }
+.s2 .stage-label { color: #00d26a; }
+.s3 .stage-box { background: linear-gradient(135deg, #2a1a2e, #351e40); border: 1px solid #452a55; }
+.s3 .stage-label { color: #a855f7; }
+.s4 .stage-box { background: linear-gradient(135deg, #2a2a1a, #403a1e); border: 1px solid #554a2a; }
+.s4 .stage-label { color: #fbbf24; }
+.s5 .stage-box { background: linear-gradient(135deg, #1a2a2a, #1e3a3a); border: 1px solid #2a4a4a; }
+.s5 .stage-label { color: #22d3ee; }
+.s6 .stage-box { background: linear-gradient(135deg, #2a1a1a, #3a1e1e); border: 1px solid #4a2a2a; }
+.s6 .stage-label { color: #f45b69; }
+.s7 .stage-box { background: linear-gradient(135deg, #0d1a0d, #142814); border: 2px solid #00d26a; }
+.s7 .stage-label { color: #00d26a; }
+
+/* Flow indicator */
+.flow-numbers { position: absolute; left: -36px; top: 24px; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.s1 .flow-numbers { background: #4a9eff; color: #000; }
+.s2 .flow-numbers { background: #00d26a; color: #000; }
+.s3 .flow-numbers { background: #a855f7; color: #fff; }
+.s4 .flow-numbers { background: #fbbf24; color: #000; }
+.s5 .flow-numbers { background: #22d3ee; color: #000; }
+.s6 .flow-numbers { background: #f45b69; color: #fff; }
+.s7 .flow-numbers { background: #00d26a; color: #000; }
+
+/* Output counts */
+.output-badge { display: inline-block; background: rgba(255,255,255,0.1); border-radius: 20px; padding: 4px 12px; font-size: 11px; margin-top: 8px; }
+
+/* Option 2 vs 3 split */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
+.split-box { border-radius: 8px; padding: 14px; }
+.split-a { background: rgba(74,158,255,0.1); border: 1px solid rgba(74,158,255,0.3); }
+.split-b { background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.3); }
+.split-title { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.split-a .split-title { color: #4a9eff; }
+.split-b .split-title { color: #a855f7; }
+.split-content { font-size: 11px; line-height: 1.6; color: #aaa; }
+
+.section-divider { text-align: center; padding: 30px 0 20px; }
+.section-divider span { color: #444; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; }
+
+.footer { text-align: center; margin-top: 40px; padding: 20px; color: #444; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>AI Trading Tool — Full System Funnel</h1>
+<p class="subtitle">Every stage from market data to trade execution</p>
+
+<!-- Stage 1: Data Sources -->
+<div class="stage s1">
+<div class="stage-box">
+<div class="flow-numbers">1</div>
+<div class="stage-label">Data Collection</div>
+<div class="stage-title">Market Data Ingestion</div>
+<div class="stage-desc">Real price data and technical indicators for 25 LSE stocks, refreshed every 15 minutes during market hours (08:00-16:30 UK).</div>
+<div class="stage-detail">
+<div class="stage-detail-item">
+<div class="label">Primary Source</div>
+<div class="value">Twelve Data API <span class="cost-badge free">FREE</span></div>
+<div style="font-size:11px;color:#666;margin-top:4px">800 requests/day, 8/min, 100+ indicators</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Fallback Source</div>
+<div class="value">yfinance <span class="cost-badge free">FREE</span></div>
+<div style="font-size:11px;color:#666;margin-top:4px">Unlimited but unreliable (unofficial scraper)</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Data Points Per Stock</div>
+<div class="value">OHLCV + 13 technical indicators</div>
+<div style="font-size:11px;color:#666;margin-top:4px">RSI, MACD, Bollinger, ATR, Stochastic, etc.</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Universe</div>
+<div class="value">25 stocks (FTSE 100 + ETFs)</div>
+<div style="font-size:11px;color:#666;margin-top:4px">SHEL, AZN, HSBA, BP, BARC, VUSA, etc.</div>
+</div>
+</div>
+<div class="output-badge">25 stocks with full technical profiles ▼</div>
+</div>
+</div>
+
+<div class="arrow"><svg width="40" height="30"><polygon points="20,30 8,10 32,10" fill="#2a3550"/></svg></div>
+
+<!-- Stage 2: Strategies -->
+<div class="stage s2">
+<div class="stage-box">
+<div class="flow-numbers">2</div>
+<div class="stage-label">Signal Generation</div>
+<div class="stage-title">4 Quantitative Strategies</div>
+<div class="stage-desc">Each strategy independently scores every stock from -10 (strong sell) to +10 (strong buy), with specific entry, stop-loss, and take-profit levels.</div>
+<div class="stage-detail">
+<div class="stage-detail-item">
+<div class="label">Momentum / Trend Following</div>
+<div class="value">Ride existing trends</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Price vs MAs, MACD direction, RSI 40-70, volume confirmation</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Mean Reversion</div>
+<div class="value">Buy oversold bounces</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Bollinger Band lows, RSI &lt;30, Stochastic oversold, distance from SMA20</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Breakout</div>
+<div class="value">Catch new highs</div>
+<div style="font-size:11px;color:#666;margin-top:4px">20-day high break, volume confirmation, BB squeeze, ATR expansion</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">ETF Rotation</div>
+<div class="value">Strongest sector momentum</div>
+<div style="font-size:11px;color:#666;margin-top:4px">1-month relative strength, SMA50 trend, low volatility preference</div>
+</div>
+</div>
+<div class="output-badge">~100 signals (25 stocks × 4 strategies) ▼</div>
+</div>
+</div>
+
+<div class="arrow"><svg width="40" height="30"><polygon points="20,30 8,10 32,10" fill="#2a4535"/></svg></div>
+
+<!-- Stage 3: Dual Scoring -->
+<div class="stage s3">
+<div class="stage-box">
+<div class="flow-numbers">3</div>
+<div class="stage-label">Dual Perspective Scoring</div>
+<div class="stage-title">Conservative + Aggressive Engines</div>
+<div class="stage-desc">Two independent scoring engines weight the signals differently, creating a natural filter. Both must agree for a trade to execute.</div>
+<div class="stage-detail">
+<div class="stage-detail-item">
+<div class="label">Conservative Engine</div>
+<div class="value" style="color:#4a9eff">Fundamentals & Risk Focus</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Weights: valuation (P/E), dividend yield, beta, MA alignment, drawdown risk, support/resistance, volume trend. Needs score ≥7 to buy.</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Aggressive Engine</div>
+<div class="value" style="color:#a855f7">Momentum & Timing Focus</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Weights: MACD crossovers, RSI zones, volume spikes, consecutive patterns, price acceleration, BB squeeze. Needs score ≥6.5 to buy.</div>
+</div>
+</div>
+<div class="output-badge">25 stocks with dual scores (0-10 each) ▼</div>
+</div>
+</div>
+
+<div class="arrow"><svg width="40" height="30"><polygon points="20,30 8,10 32,10" fill="#452a55"/></svg></div>
+
+<!-- Stage 4: Decision -->
+<div class="stage s4">
+<div class="stage-box">
+<div class="flow-numbers">4</div>
+<div class="stage-label">Decision Layer</div>
+<div class="stage-title">AI Analysis + Consensus</div>
+<div class="stage-desc">This is where real intelligence enters. The bot packages the top candidates into a prompt — you paste it into your Claude Max chat for genuine AI reasoning. No extra cost.</div>
+<div class="split">
+<div class="split-box split-a">
+<div class="split-title">Option A — Semi-Auto (FREE)</div>
+<div class="split-content">
+Bot sends you a Telegram message:<br><br>
+<span style="color:#4a9eff">"BUY candidate: SHEL.L @ £26.54<br>
+Conservative: 7.2/10 | Aggressive: 8.1/10<br>
+Stop: £25.90 | Target: £27.80<br>
+Momentum BUY, MA aligned, P/E 12.3"</span><br><br>
+You paste into <strong>Claude Max</strong> (your subscription):<br>
+<span style="color:#ccc">"Should I buy Shell at £26.54? [context]"</span><br><br>
+Claude reasons about macro, earnings, sector risks.<br>
+You reply to Telegram: <strong>"execute"</strong> or <strong>"skip"</strong><br><br>
+<span style="color:#00d26a">5-10 min/day of your time. Real AI. £0 extra.</span>
+</div>
+</div>
+<div class="split-box split-b">
+<div class="split-title">Option B — Full Auto (~£60/month)</div>
+<div class="split-content">
+Bot calls Claude API automatically:<br><br>
+<span style="color:#a855f7">"Analyse SHEL.L for short-term trade.<br>
+Technicals: [full data dump]<br>
+Consider: macro, earnings, sector, risks.<br>
+Return: BUY/SELL/HOLD + reasoning"</span><br><br>
+Claude API returns real analysis.<br>
+Grok API checks X/Twitter sentiment.<br>
+Consensus engine merges both.<br><br>
+<strong>No human involvement needed.</strong><br><br>
+<span style="color:#ff9f43">~£2-4/day in API costs.</span><br>
+<span style="color:#666">Add API keys when ready to upgrade.</span>
+</div>
+</div>
+</div>
+<div class="output-badge">2-5 confirmed trade candidates per day ▼</div>
+</div>
+</div>
+
+<div class="arrow"><svg width="40" height="30"><polygon points="20,30 8,10 32,10" fill="#554a2a"/></svg></div>
+
+<!-- Stage 5: Risk Manager -->
+<div class="stage s5">
+<div class="stage-box">
+<div class="flow-numbers">5</div>
+<div class="stage-label">Risk Gate</div>
+<div class="stage-title">Risk Manager</div>
+<div class="stage-desc">Every trade must pass all risk checks before execution. This is the safety net that prevents catastrophic losses. No override possible.</div>
+<div class="stage-detail">
+<div class="stage-detail-item">
+<div class="label">Daily Stop-Loss</div>
+<div class="value" style="color:#f45b69">-£200/day hard limit</div>
+<div style="font-size:11px;color:#666;margin-top:4px">If daily P&L hits -£200, ALL trading halts until next day</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Position Limits</div>
+<div class="value">Max 15% per stock, 8 positions</div>
+<div style="font-size:11px;color:#666;margin-top:4px">No single stock can dominate the portfolio</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Per-Trade Risk</div>
+<div class="value">2% stop-loss, 4% take-profit</div>
+<div style="font-size:11px;color:#666;margin-top:4px">2:1 reward/risk ratio minimum</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">ISA Compliance</div>
+<div class="value">£20,000 annual cap tracked</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Long-only, no leverage, no derivatives</div>
+</div>
+</div>
+<div class="output-badge">Risk-approved trades only ▼</div>
+</div>
+</div>
+
+<div class="arrow"><svg width="40" height="30"><polygon points="20,30 8,10 32,10" fill="#2a4a4a"/></svg></div>
+
+<!-- Stage 6: Execution -->
+<div class="stage s6">
+<div class="stage-box">
+<div class="flow-numbers">6</div>
+<div class="stage-label">Execution</div>
+<div class="stage-title">Trading 212 API</div>
+<div class="stage-desc">Places real buy/sell orders in your Stocks & Shares ISA. All gains tax-free. Currently in paper trading mode — flip one switch to go live.</div>
+<div class="stage-detail">
+<div class="stage-detail-item">
+<div class="label">Broker</div>
+<div class="value">Trading 212 ISA <span class="cost-badge free">FREE</span></div>
+<div style="font-size:11px;color:#666;margin-top:4px">Commission-free trades, API access included</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Order Types</div>
+<div class="value">Market & Limit orders</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Auto stop-loss and take-profit monitoring</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Current Mode</div>
+<div class="value" style="color:#fbbf24">Paper Trading (emulator)</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Set EMULATOR_MODE=False + add T212 API key to go live</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Auto-Management</div>
+<div class="value">Stops & targets monitored</div>
+<div style="font-size:11px;color:#666;margin-top:4px">Positions auto-closed when stop or target hit</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="arrow"><svg width="40" height="30"><polygon points="20,30 8,10 32,10" fill="#4a2a2a"/></svg></div>
+
+<!-- Stage 7: Tracking -->
+<div class="stage s7">
+<div class="stage-box">
+<div class="flow-numbers">7</div>
+<div class="stage-label">Performance Tracking</div>
+<div class="stage-title">Dashboard + Benchmark</div>
+<div class="stage-desc">Track every trade, compare against VUSA (S&P 500), monitor daily/monthly/annual returns and risk metrics.</div>
+<div class="stage-detail">
+<div class="stage-detail-item">
+<div class="label">Daily View</div>
+<div class="value">P&L, target attainment, trades</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Benchmark</div>
+<div class="value">Portfolio vs VUSA (S&P 500)</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Risk Metrics</div>
+<div class="value">Sharpe, drawdown, win rate</div>
+</div>
+<div class="stage-detail-item">
+<div class="label">Alerts</div>
+<div class="value">Telegram notifications</div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- Cost Summary -->
+<div style="margin-top: 40px; background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 24px;">
+<div style="font-size: 16px; font-weight: 700; margin-bottom: 16px; color: #fff;">Total Cost Summary</div>
+<table style="width:100%; border-collapse: collapse; font-size: 13px;">
+<tr style="border-bottom: 1px solid #1f2937;">
+<td style="padding: 8px 0; color: #888;">Twelve Data API</td>
+<td style="padding: 8px 0; text-align: right;"><span class="cost-badge free">FREE</span></td>
+</tr>
+<tr style="border-bottom: 1px solid #1f2937;">
+<td style="padding: 8px 0; color: #888;">Trading 212 API + ISA</td>
+<td style="padding: 8px 0; text-align: right;"><span class="cost-badge free">FREE</span></td>
+</tr>
+<tr style="border-bottom: 1px solid #1f2937;">
+<td style="padding: 8px 0; color: #888;">yfinance (fallback)</td>
+<td style="padding: 8px 0; text-align: right;"><span class="cost-badge free">FREE</span></td>
+</tr>
+<tr style="border-bottom: 1px solid #1f2937;">
+<td style="padding: 8px 0; color: #888;">Claude analysis (Option A)</td>
+<td style="padding: 8px 0; text-align: right;"><span class="cost-badge existing">YOUR MAX SUB</span></td>
+</tr>
+<tr style="border-bottom: 1px solid #1f2937;">
+<td style="padding: 8px 0; color: #888;">Claude + Grok API (Option B)</td>
+<td style="padding: 8px 0; text-align: right;"><span class="cost-badge optional">~£60/mo OPTIONAL</span></td>
+</tr>
+<tr>
+<td style="padding: 12px 0; font-weight: 700; color: #fff; font-size: 15px;">Total to start</td>
+<td style="padding: 12px 0; text-align: right; font-weight: 700; color: #00d26a; font-size: 15px;">£0</td>
+</tr>
+</table>
+</div>
+
+<div class="footer">
+AI Trading Tool — Stocks & Shares ISA<br>
+Capital: £20,000 | Target: £300-600/month | Stop-Loss: £200/day
+</div>
+
+</div>
+</body>
+</html>

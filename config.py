@@ -144,6 +144,11 @@ TWELVE_DATA_EXCHANGE = "LSE"
 # Market data
 TWELVE_DATA_API_KEY = None           # Free: twelvedata.com
 
+# News & fundamentals
+FINNHUB_API_KEY = None               # Free 60/min: finnhub.io
+ALPHA_VANTAGE_API_KEY = None         # Free 25/day: alphavantage.co
+FMP_API_KEY = None                   # Free 250/day: financialmodelingprep.com
+
 # AI analysis (Option B: fully automated)
 CLAUDE_API_KEY = None                # console.anthropic.com
 GROK_API_KEY = None                  # console.x.ai
@@ -155,6 +160,41 @@ T212_BASE_URL = "https://live.trading212.com/api/v0"
 # Notifications
 TELEGRAM_BOT_TOKEN = None            # @BotFather on Telegram
 TELEGRAM_CHAT_ID = None              # Your chat ID
+
+# ─── Spike Radar Settings (PM Mode) ──────────────────────────────────
+# Scan the full Russell 1000 + 2000 for unusual movers
+UNIVERSE_MODE = "US"                 # "US", "UK", "BOTH"
+
+# Thresholds for flagging a stock as a spike candidate
+SPIKE_MIN_PRICE_CHANGE_PCT = 5.0     # Min intraday % move to consider
+SPIKE_MIN_VOLUME_RATIO = 2.0         # Volume must be 2x+ 20-day avg
+SPIKE_MAX_FLOAT_MILLIONS = 500       # Low float = higher spike potential
+SPIKE_HIGH_SI_PCT = 15.0             # Short interest >15% = squeeze fuel
+SPIKE_MIN_PRICE_USD = 2.0            # Filter out penny stocks below $2
+SPIKE_MAX_PRICE_USD = 500.0          # Filter out very expensive stocks
+
+# Composite spike score weighting (must sum to 1.0)
+SPIKE_WEIGHTS = {
+    "volume_ratio": 0.25,
+    "price_change": 0.20,
+    "short_interest": 0.15,
+    "low_float": 0.15,
+    "news_catalyst": 0.10,
+    "social_velocity": 0.10,
+    "gap": 0.05,
+}
+SPIKE_ALERT_THRESHOLD = 70           # Spike score 0-100, alert at 70+
+
+# How many candidates to deep-analyse after the initial Russell scan
+SPIKE_SHORTLIST_SIZE = 25
+
+# Batch size for yfinance multi-ticker downloads
+YFINANCE_BATCH_SIZE = 100
+
+# ─── PM Brief Settings ───────────────────────────────────────────────
+BRIEF_SEND_TIME = "07:00"            # UK time — morning brief delivery
+INTRADAY_ALERT_INTERVAL_MIN = 5      # Check for spikes every 5 mins
+MAX_IDEAS_PER_BRIEF = 10             # Top N candidates in morning brief
 
 # ─── AI Model Settings ───────────────────────────────────────────────
 CLAUDE_MODEL = "claude-sonnet-4-20250514"

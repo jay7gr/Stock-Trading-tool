@@ -198,7 +198,9 @@ MAX_IDEAS_PER_BRIEF = 10             # Top N candidates in morning brief
 
 # ─── AI Model Settings ───────────────────────────────────────────────
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
-GROK_MODEL = "grok-3"
+GROK_MODEL = "grok-4-fast"           # Cheap + fast for frequent calls
+GROK_USE_LIVE_SEARCH = True          # Enable real-time X/web search
+GROK_SPIKE_VALIDATION_TOP_N = 10     # Grok-validate top N from radar
 
 # ─── Consensus Settings ──────────────────────────────────────────────
 CONSENSUS_MODE = "specialised"       # "agreement", "weighted", "specialised"

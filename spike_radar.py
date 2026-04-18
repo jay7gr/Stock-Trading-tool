@@ -242,10 +242,14 @@ def fetch_fundamentals(ticker: str) -> dict:
 
 def scan_for_spikes(universe: Optional[list[str]] = None,
                     min_price: float = None,
-                    max_price: float = None) -> list[SpikeCandidate]:
+                    max_price: float = None,
+                    use_grok: bool = True) -> list[SpikeCandidate]:
     """
     Full pipeline: scan universe → filter movers → deep analysis → rank.
     Returns list of SpikeCandidate ordered by spike_score descending.
+
+    If use_grok=True and GROK_API_KEY is set, the top candidates are
+    enriched with Grok Live Search X/web sentiment verdicts.
     """
     min_price = min_price if min_price is not None else config.SPIKE_MIN_PRICE_USD
     max_price = max_price if max_price is not None else config.SPIKE_MAX_PRICE_USD
@@ -335,6 +339,15 @@ def scan_for_spikes(universe: Optional[list[str]] = None,
         c.action = classify_action(c)
 
     shortlist.sort(key=lambda c: c.spike_score, reverse=True)
+
+    # Optional Grok enrichment layer — live X/web validation
+    if use_grok and config.GROK_API_KEY:
+        print(f"\n[4b/4] Grok validation on top 10 candidates...")
+        try:
+            from grok_analyst import enrich_spike_candidates
+            shortlist = enrich_spike_candidates(shortlist, top_n=10)
+        except Exception as e:
+            print(f"[Grok] Enrichment failed: {e}")
 
     # Log top results
     print(f"\n{'─'*60}")

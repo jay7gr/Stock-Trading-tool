@@ -295,33 +295,92 @@ def generate_brief(portfolio_positions: Optional[dict] = None,
         date=now.strftime("%A, %d %B %Y"),
     )
 
-    brief.add_section(
+    # Placeholder — replaced at end with Grok narrative if available
+    tldr_placeholder = BriefSection(
         title="📝 TL;DR",
-        content="_Summary will be populated after all sections run._",
+        content="_Narrative will be populated after scan completes._",
     )
+    brief.sections.append(tldr_placeholder)
 
     # Macro snapshot (fast)
     print("[Brief] Fetching macro snapshot...")
-    brief.sections.append(macro_snapshot())
+    macro = macro_snapshot()
+    brief.sections.append(macro)
 
     # Portfolio
     print("[Brief] Reviewing portfolio...")
     brief.sections.append(portfolio_health(portfolio_positions or {}))
+
+    # Grok portfolio sentiment drift check
+    if portfolio_positions and config.GROK_API_KEY:
+        print("[Brief] Grok reviewing portfolio sentiment...")
+        brief.sections.append(grok_position_review(portfolio_positions))
 
     # Earnings
     print("[Brief] Fetching earnings calendar...")
     brief.sections.append(earnings_calendar())
 
     # Spike radar (slow — full universe scan)
+    spike_section = None
     if include_spike_scan:
         print("[Brief] Running spike radar (this takes a few minutes)...")
-        brief.sections.append(spike_candidates_section(max_items=config.MAX_IDEAS_PER_BRIEF))
+        spike_section = spike_candidates_section(max_items=config.MAX_IDEAS_PER_BRIEF)
+        brief.sections.append(spike_section)
 
     # Social
     print("[Brief] Fetching social trends...")
     brief.sections.append(social_trending_section())
 
+    # Grok writes the TL;DR paragraph using all gathered data
+    if config.GROK_API_KEY:
+        print("[Brief] Grok writing TL;DR narrative...")
+        try:
+            from grok_analyst import get_analyst
+            narrative = get_analyst().write_narrative(
+                macro_snapshot=macro.data,
+                spike_candidates=(spike_section.data.get("candidates", [])
+                                  if spike_section else []),
+                portfolio=portfolio_positions or {},
+            )
+            tldr_placeholder.content = narrative
+        except Exception as e:
+            tldr_placeholder.content = f"_Grok narrative failed: {e}_"
+
     return brief
+
+
+def grok_position_review(portfolio_positions: dict) -> BriefSection:
+    """Run Grok live-search sentiment check on each holding."""
+    try:
+        from grok_analyst import review_portfolio
+        verdicts = review_portfolio(portfolio_positions)
+    except Exception as e:
+        return BriefSection(
+            title="🤖 Grok Position Review",
+            content=f"_Error: {e}_",
+        )
+
+    if not verdicts:
+        return BriefSection(
+            title="🤖 Grok Position Review",
+            content="_No verdicts returned._",
+        )
+
+    lines = ["| Ticker | Verdict | Confidence | Narrative |",
+             "|---|---|---:|---|"]
+    data = {}
+    for ticker, v in verdicts.items():
+        narrative_short = v.narrative[:120] + "…" if len(v.narrative) > 120 else v.narrative
+        lines.append(
+            f"| {ticker} | **{v.verdict}** | {v.confidence:.0f}/10 | {narrative_short} |"
+        )
+        data[ticker] = v.to_dict()
+
+    return BriefSection(
+        title="🤖 Grok Position Review (live X sentiment)",
+        content="\n".join(lines),
+        data=data,
+    )
 
 
 def save_brief(brief: DailyBrief, output_dir: str = "data/briefs") -> tuple[Path, Path]:

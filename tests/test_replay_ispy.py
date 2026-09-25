@@ -140,7 +140,9 @@ def test_monitor_flat_is_idle(tmp_path, monkeypatch):
     assert res["action"] == "flat"
 
 
-def test_window():
-    assert monitor.in_window(datetime(2026, 9, 28, 8, 0, tzinfo=LONDON))
-    assert not monitor.in_window(datetime(2026, 9, 28, 21, 0, tzinfo=LONDON))
-    assert not monitor.in_window(datetime(2026, 9, 26, 12, 0, tzinfo=LONDON))  # Saturday
+def test_market_state_for_lse_position():
+    st, ex, _ = monitor.market_state("ISPY.L", datetime(2026, 9, 28, 8, 0, tzinfo=LONDON))
+    assert st == "open" and ex.code == "LSE"
+    assert monitor.market_state("ISPY.L", datetime(2026, 9, 28, 16, 40, tzinfo=LONDON))[0] == "final"
+    assert monitor.market_state("ISPY.L", datetime(2026, 9, 28, 21, 0, tzinfo=LONDON))[0] == "closed"
+    assert monitor.market_state("ISPY.L", datetime(2026, 9, 26, 12, 0, tzinfo=LONDON))[0] == "closed"  # Sat

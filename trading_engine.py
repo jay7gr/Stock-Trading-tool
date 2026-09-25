@@ -14,7 +14,8 @@ from ai_analyst import claude_analyse, grok_analyse
 from consensus import make_decision, TradeDecision
 from risk_manager import RiskManager
 from emulator import PaperTradingEmulator
-from instruments import InstrumentMismatchError, UnknownInstrumentError
+from instruments import InstrumentMismatchError, UnknownInstrumentError, NoSessionDataError
+from market_hours import MarketNotCoveredError
 from quotes import StaleQuoteError
 from broker_t212 import Trading212Client
 from notifications import Notifier
@@ -174,7 +175,8 @@ class TradingEngine:
         if config.EMULATOR_MODE or not self.broker:
             try:
                 return self._paper_buy(ticker, decision, claude_result, grok_result, price)
-            except (InstrumentMismatchError, UnknownInstrumentError, StaleQuoteError) as e:
+            except (InstrumentMismatchError, UnknownInstrumentError, NoSessionDataError,
+                    MarketNotCoveredError, StaleQuoteError) as e:
                 print(f"[BUY REJECTED] {ticker}: {e}")
                 return None
         return self._live_buy(ticker, decision, claude_result, grok_result, price)

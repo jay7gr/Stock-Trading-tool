@@ -15,6 +15,8 @@ from datetime import date, timedelta
 
 import config
 from trading_engine import TradingEngine
+from pnl import fmt_gbp, day_pnl as calc_day_pnl, day_risk, read_live_status, halted_on
+from quotes import now_london
 from portfolio import (
     get_benchmark_returns, calculate_portfolio_history,
     performance_vs_benchmark, compute_period_returns, compute_risk_metrics,
@@ -70,41 +72,82 @@ with st.sidebar:
 
 
 # ─── Main Content ─────────────────────────────────────────────────────
-summary = engine.emulator.get_summary()
+summary = engine.emulator.get_summary()   # also refreshes position marks
 risk = engine.risk.get_status()
+
+# Today's P&L comes from the book (trades + open marks), not in-memory risk state:
+# realised P&L of SELLs on the London calendar day + open mark-to-market, in GBP.
+_today = now_london().date()
+_live = read_live_status(engine.emulator.data_dir)
+day_pnl_gbp = calc_day_pnl(engine.emulator.trade_history, engine.emulator.positions.values(), _today)
+dr = day_risk(day_pnl_gbp)
+is_halted = halted_on(_live, _today) or dr["breached"]
+
+
+def _pnl_style(v):
+    """Red for losses, green for gains in table cells ('-£…', '+£…', '-1.2%', '+0.5%')."""
+    if isinstance(v, str) and len(v) > 1:
+        if v.startswith("-"):
+            return "color: #ff4b4b"
+        if v.startswith("+"):
+            return "color: #21c354"
+    return ""
+
+
+def _styled(df, cols):
+    cols = [c for c in cols if c in df.columns]
+    return df.style.map(_pnl_style, subset=cols) if cols and not df.empty else df
+
 
 # ─── Row 1: Key Metrics ──────────────────────────────────────────────
 st.header("Portfolio Overview")
 cols = st.columns(6)
 
 with cols[0]:
-    st.metric("Portfolio Value", f"£{summary['portfolio_value']:,.2f}",
-              delta=f"£{summary['total_pnl']:,.2f}")
+    st.metric("Portfolio Value", fmt_gbp(summary['portfolio_value']),
+              delta=fmt_gbp(summary['total_pnl'], signed=True))
 with cols[1]:
-    st.metric("Cash Available", f"£{summary['cash']:,.2f}")
+    st.metric("Cash Available", fmt_gbp(summary['cash']))
 with cols[2]:
-    st.metric("Total Return", f"{summary['total_pnl_pct']:.2f}%",
-              delta=f"£{summary['total_pnl']:,.2f}")
+    st.metric("Total Return", f"{summary['total_pnl_pct']:+.2f}%",
+              delta=fmt_gbp(summary['total_pnl'], signed=True))
 with cols[3]:
-    st.metric("Today's P&L", f"£{risk['daily_pnl']:,.2f}",
-              delta=None)
+    st.metric("Today's P&L", fmt_gbp(day_pnl_gbp),
+              delta=f"{fmt_gbp(day_pnl_gbp, signed=True)} today" if day_pnl_gbp else None,
+              help="Realised P&L booked today (London day) + open mark-to-market, all markets, GBP.")
+    if is_halted:
+        st.badge("HALTED", icon=":material/block:", color="red")
+    else:
+        st.badge("Trading active", color="green")
 with cols[4]:
     st.metric("Open Positions", summary['open_positions'])
 with cols[5]:
-    target_pct = risk['attainment_pct']
-    st.metric("Daily Target", f"{target_pct:.0f}%",
-              delta=f"£{risk['daily_pnl']:,.2f} / £{config.DAILY_PROFIT_TARGET_MIN}")
+    st.metric("Daily Target", f"{dr['target_progress'] * 100:.0f}%",
+              delta=f"{fmt_gbp(day_pnl_gbp, signed=True)} / {fmt_gbp(dr['target'], signed=True)}")
+
+# Day P&L vs +£200 target and -£200 halt
+g1, g2 = st.columns(2)
+with g1:
+    st.progress(dr["target_progress"],
+                text=f"Target {fmt_gbp(dr['target'], signed=True)}: "
+                     f"{fmt_gbp(max(0.0, dr['to_target']))} to go")
+with g2:
+    st.progress(dr["halt_used"],
+                text=f"Halt {fmt_gbp(dr['stop'])}: headroom {fmt_gbp(dr['headroom_to_halt'])}"
+                     f" ({dr['halt_used'] * 100:.0f}% of day limit used)")
 
 # Risk status bar
-if risk['is_halted']:
-    st.error(f"TRADING HALTED: {risk['halt_reason']}")
-elif risk['daily_pnl'] < 0:
-    remaining = abs(config.DAILY_STOP_LOSS) - abs(risk['daily_pnl'])
-    st.warning(f"Daily loss: £{abs(risk['daily_pnl']):.2f} | Stop-loss buffer: £{remaining:.2f}")
-elif risk['daily_pnl'] >= config.DAILY_PROFIT_TARGET_MIN:
-    st.success(f"Daily target reached! P&L: £{risk['daily_pnl']:.2f}")
+if is_halted:
+    reason = _live.get("halt_reason") or f"Day P&L {fmt_gbp(day_pnl_gbp)} <= {fmt_gbp(dr['stop'])}"
+    st.error(f"TRADING HALTED: {reason}")
+elif day_pnl_gbp < 0:
+    st.warning(f"Daily loss: {fmt_gbp(day_pnl_gbp)} | Headroom to {fmt_gbp(dr['stop'])} halt: "
+               f"{fmt_gbp(dr['headroom_to_halt'])}")
+elif day_pnl_gbp >= config.DAILY_PROFIT_TARGET_MIN:
+    st.success(f"Daily target reached! P&L: {fmt_gbp(day_pnl_gbp, signed=True)}")
 else:
-    st.info(f"Trading active | Target: £{config.DAILY_PROFIT_TARGET_MIN}-{config.DAILY_PROFIT_TARGET_MAX}/day")
+    st.info(f"Trading active | Target: {fmt_gbp(config.DAILY_PROFIT_TARGET_MIN)}-"
+            f"{fmt_gbp(config.DAILY_PROFIT_TARGET_MAX)}/day")
 
 st.divider()
 
@@ -181,15 +224,16 @@ with tab_positions:
             pos_data.append({
                 "Ticker": ticker,
                 "Qty": f"{pos.quantity:.2f}",
-                "Entry": f"£{pos.avg_entry_price:.2f}",
-                "Current": f"£{pos.current_price:.2f}",
-                "Value": f"£{pos.value_gbp:.2f}",
-                "P&L": f"£{pos.unrealised_pnl:+.2f}",
+                "Entry": fmt_gbp(pos.avg_entry_price),
+                "Current": fmt_gbp(pos.current_price),
+                "Value": fmt_gbp(pos.value_gbp),
+                "P&L": fmt_gbp(pos.unrealised_pnl, signed=True),
                 "P&L %": f"{pos.unrealised_pnl_pct:+.1f}%",
                 "Stop": f"£{pos.stop_loss:.2f}",
                 "Target": f"£{pos.take_profit:.2f}",
             })
-        st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
+        st.dataframe(_styled(pd.DataFrame(pos_data), ["P&L", "P&L %"]),
+                     use_container_width=True, hide_index=True)
 
         # Position pie chart
         fig = px.pie(
@@ -214,15 +258,16 @@ with tab_history:
                 "Time": t.timestamp[:19],
                 "Ticker": t.ticker,
                 "Action": t.action,
-                "Price": f"£{t.price:.2f}",
-                "Value": f"£{t.value_gbp:.2f}",
+                "Price": fmt_gbp(t.price),
+                "Value": fmt_gbp(t.value_gbp),
                 "Claude": f"{t.claude_score:.1f}",
                 "Grok": f"{t.grok_score:.1f}",
                 "Combined": f"{t.combined_score:.1f}",
-                "P&L": f"£{t.pnl:+.2f}" if t.pnl else "-",
+                "P&L": fmt_gbp(t.pnl, signed=True) if t.pnl else "-",
                 "Status": t.status,
             })
-        st.dataframe(pd.DataFrame(trade_data), use_container_width=True, hide_index=True)
+        st.dataframe(_styled(pd.DataFrame(trade_data), ["P&L"]),
+                     use_container_width=True, hide_index=True)
 
         # Trade detail expander
         selected_trade = st.selectbox(
@@ -293,9 +338,10 @@ with tab_benchmark:
                 "Portfolio": f"{vals['portfolio_return']:+.2f}%",
                 "VUSA (S&P 500)": f"{vals['benchmark_return']:+.2f}%",
                 "Alpha": f"{vals['alpha']:+.2f}%",
-                "P&L": f"£{vals['portfolio_pnl']:+.2f}",
+                "P&L": fmt_gbp(vals['portfolio_pnl'], signed=True),
             })
-        st.dataframe(pd.DataFrame(returns_data), use_container_width=True, hide_index=True)
+        st.dataframe(_styled(pd.DataFrame(returns_data), ["Portfolio", "VUSA (S&P 500)", "Alpha", "P&L"]),
+                     use_container_width=True, hide_index=True)
 
         # Risk metrics
         st.markdown("### Risk Metrics")

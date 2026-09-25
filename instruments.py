@@ -32,6 +32,8 @@ Quote units cross-checked against yfinance fast_info.currency on
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime, time as dtime, timedelta
+from zoneinfo import ZoneInfo
 
 
 class InstrumentMismatchError(ValueError):
@@ -40,6 +42,121 @@ class InstrumentMismatchError(ValueError):
 
 class UnknownInstrumentError(KeyError):
     """Raised when a symbol is not in the registry (no guessing, no aliases)."""
+
+
+class NoSessionDataError(ValueError):
+    """Raised when an instrument's exchange has no trading-session data
+    (Risk SOP v2.2: such instruments cannot be registered or filled)."""
+
+
+# ─── Exchanges & trading sessions (Risk SOP v2.2) ─────────────────────
+#
+# Times are exchange-local wall-clock; zoneinfo handles DST per exchange.
+# `segments` are the continuous-trading periods; `close_end` is when the
+# closing auction/fixing finishes (the last moment a print can occur).
+# The monitor watches [first segment open, close_end] on local weekdays
+# (lunch breaks included — harmless, and safer than missing a print) and
+# runs one final check within `final_check_min` minutes after close_end.
+# Exchange holidays and half-days are NOT modelled (monitor just checks on
+# a closed day; empty bars are harmless).
+# Sources checked 2026-09-25: JPX trading-hours page (TSE 09:00-11:30,
+# 12:30-15:30, closing auction 15:25-15:30); HKEX securities-market hours
+# (09:30-12:00, extended morning 12:00-13:00, 13:00-16:00, CAS to 16:10);
+# ASX cash-market phases (open ~10:00, normal trading to 16:00, CSPA to
+# 16:11). LSE/Xetra/Euronext/NYSE/Nasdaq are the standard published hours.
+
+@dataclass(frozen=True)
+class Exchange:
+    code: str
+    name: str
+    tz: str
+    segments: tuple            # (("HH:MM","HH:MM"), ...) local continuous trading
+    close_end: str             # local time the closing auction ends
+    final_check_min: int = 10
+    weekdays: tuple = (0, 1, 2, 3, 4)
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZoneInfo(self.tz)
+
+    @staticmethod
+    def _t(hhmm: str) -> dtime:
+        h, m = hhmm.split(":")
+        return dtime(int(h), int(m))
+
+    def window_on(self, local_day: date):
+        """(open, close_end) as aware datetimes for a local date, or None if not a trading weekday."""
+        if local_day.weekday() not in self.weekdays or not self.segments:
+            return None
+        z = self.zone
+        o = datetime.combine(local_day, self._t(self.segments[0][0]), tzinfo=z)
+        c = datetime.combine(local_day, self._t(self.close_end), tzinfo=z)
+        return o, c
+
+    def _aware(self, at: datetime) -> datetime:
+        if at.tzinfo is None:
+            raise ValueError("timezone-aware datetime required")
+        return at.astimezone(self.zone)
+
+    def state(self, at: datetime):
+        """('open'|'final'|'closed', window) at instant `at`.
+        'final' = within final_check_min after close_end of today's session."""
+        loc = self._aware(at)
+        for d in (loc.date(), loc.date() - timedelta(days=1)):
+            w = self.window_on(d)
+            if not w:
+                continue
+            o, c = w
+            if o <= loc <= c:
+                return "open", w
+            if c < loc <= c + timedelta(minutes=self.final_check_min):
+                return "final", w
+        return "closed", None
+
+    def is_open(self, at: datetime) -> bool:
+        return self.state(at)[0] == "open"
+
+    def next_open(self, at: datetime) -> datetime:
+        loc = self._aware(at)
+        for i in range(0, 8):
+            w = self.window_on(loc.date() + timedelta(days=i))
+            if w and w[0] > loc:
+                return w[0]
+        raise RuntimeError(f"no session found within a week for {self.code}")
+
+
+EXCHANGES: dict[str, Exchange] = {
+    "LSE": Exchange("LSE", "London Stock Exchange", "Europe/London",
+                    (("08:00", "16:30"),), close_end="16:35"),
+    "XETRA": Exchange("XETRA", "Deutsche Boerse Xetra", "Europe/Berlin",
+                      (("09:00", "17:30"),), close_end="17:35"),
+    "EURONEXT_PARIS": Exchange("EURONEXT_PARIS", "Euronext Paris", "Europe/Paris",
+                               (("09:00", "17:30"),), close_end="17:35"),
+    "EURONEXT_AMSTERDAM": Exchange("EURONEXT_AMSTERDAM", "Euronext Amsterdam", "Europe/Amsterdam",
+                                   (("09:00", "17:30"),), close_end="17:35"),
+    "NYSE": Exchange("NYSE", "New York Stock Exchange", "America/New_York",
+                     (("09:30", "16:00"),), close_end="16:00"),
+    "NASDAQ": Exchange("NASDAQ", "Nasdaq", "America/New_York",
+                       (("09:30", "16:00"),), close_end="16:00"),
+    "TSE": Exchange("TSE", "Tokyo Stock Exchange", "Asia/Tokyo",
+                    (("09:00", "11:30"), ("12:30", "15:30")), close_end="15:30"),
+    "HKEX": Exchange("HKEX", "Hong Kong Exchanges", "Asia/Hong_Kong",
+                     (("09:30", "12:00"), ("12:00", "13:00"), ("13:00", "16:00")), close_end="16:10"),
+    "ASX": Exchange("ASX", "Australian Securities Exchange", "Australia/Sydney",
+                    (("10:00", "16:00"),), close_end="16:12"),
+}
+
+
+def exchange_of(inst: "Instrument") -> Exchange:
+    ex = EXCHANGES.get(inst.exchange)
+    if ex is None or not ex.segments:
+        raise NoSessionDataError(
+            f"{inst.symbol} ({inst.isin}) lists on {inst.exchange!r}, which has no session data")
+    return ex
+
+
+def require_session(inst: "Instrument") -> Exchange:
+    return exchange_of(inst)
 
 
 @dataclass(frozen=True)
@@ -64,18 +181,20 @@ class Instrument:
             return None
         return raw_price / 100.0 if self.quote_unit == "GBX" else float(raw_price)
 
-    def to_book_gbp(self, raw_price: float, gbpusd: float | None = None) -> float:
-        """Vendor quote -> GBP for the paper book."""
+    def to_book_gbp(self, raw_price: float, gbpusd: float | None = None,
+                    fx: float | None = None) -> float:
+        """Vendor quote -> GBP for the paper book.
+        Non-GBP lines need `fx` = units of the trading currency per 1 GBP
+        (e.g. GBPUSD=X, GBPJPY=X); `gbpusd` is kept for backward compatibility."""
         major = self.to_major(raw_price)
         if major is None:
             return None
         if self.currency == "GBP":
             return major
-        if self.currency == "USD":
-            if not gbpusd or gbpusd <= 0:
-                raise ValueError(f"{self.symbol} trades in USD; GBPUSD rate required to book in GBP")
-            return major / gbpusd
-        raise ValueError(f"Unsupported currency {self.currency} for {self.symbol}")
+        rate = fx or gbpusd
+        if not rate or rate <= 0:
+            raise ValueError(f"{self.symbol} trades in {self.currency}; GBP{self.currency} rate required to book in GBP")
+        return major / rate
 
 
 REGISTRY: dict[str, Instrument] = {
@@ -149,6 +268,28 @@ REGISTRY: dict[str, Instrument] = {
 _BY_YF: dict[str, Instrument] = {i.yf_symbol.upper(): i for i in REGISTRY.values()}
 assert len(_BY_YF) == len(REGISTRY), "duplicate yf_symbol in registry"
 assert len({i.isin for i in REGISTRY.values()}) == len(REGISTRY), "duplicate ISIN in registry"
+for _i in REGISTRY.values():
+    require_session(_i)   # every built-in instrument must have session data
+
+
+def register(inst: Instrument) -> Instrument:
+    """Add an instrument (e.g. a new Asia pick). Rejects: missing session data,
+    duplicate symbol / yf symbol / ISIN (no aliases)."""
+    require_session(inst)
+    key = inst.symbol.upper()
+    if key in REGISTRY or inst.yf_symbol.upper() in _BY_YF:
+        raise ValueError(f"{inst.symbol}/{inst.yf_symbol} already registered")
+    if any(i.isin == inst.isin for i in REGISTRY.values()):
+        raise ValueError(f"ISIN {inst.isin} already registered under another symbol")
+    REGISTRY[key] = inst
+    _BY_YF[inst.yf_symbol.upper()] = inst
+    return inst
+
+
+def unregister(symbol: str) -> None:
+    inst = REGISTRY.pop(symbol.upper(), None)
+    if inst:
+        _BY_YF.pop(inst.yf_symbol.upper(), None)
 
 
 def resolve(symbol: str) -> Instrument:
@@ -198,4 +339,5 @@ def assert_fill_matches_ticket(ticket_symbol: str, fill_symbol: str,
     if problems:
         raise InstrumentMismatchError(
             f"ticket {ticket_symbol!r} cannot fill as {fill_symbol!r}: " + "; ".join(problems))
+    require_session(fill)   # SOP v2.2: no session data -> no fill
     return fill

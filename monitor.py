@@ -4,7 +4,9 @@ Stop/target monitor for the paper book (EMULATOR ONLY — never talks to a broke
 
 Modes
   python monitor.py                 one pass over open positions (live yfinance 1m bars)
-  python monitor.py --loop          run every minute, Mon–Fri 08:00–21:00 Europe/London
+  python monitor.py --loop          run every minute, around the clock (Risk SOP v2.2):
+                                    network checks only for positions whose exchange is
+                                    open (plus one final check after each close)
   python monitor.py --replay 2026-09-25 \
       --position ISPY.L:37.75:37.3725:38.6937:2026-09-25T08:22
                                     replay a day minute-by-minute on real 1m bars
@@ -15,13 +17,16 @@ Each pass (live):
     (bar_checks: Low<=stop -> exit min(stop, Open); High>=target -> target;
     both in one bar -> stop), books SELLs via the emulator (data/trades.json,
     data/portfolio.json), stores last_check;
-  * recomputes day P&L (realised today + unrealised from bar marks); at
-    <= config.DAILY_STOP_LOSS (-£200) flattens everything and sets halted;
+  * recomputes ONE day P&L across all markets in GBP (realised on the London
+    day + open mark-to-market, pnl.py); at <= config.DAILY_STOP_LOSS (-£200)
+    sets halted and flattens every position whose market is open; positions
+    on closed markets are queued (pending_flatten) and sold at their next open;
   * refreshes data/live_status.json (day_pnl, remaining_day_risk_gbp, halted,
     open_positions, closed_today, last_monitor) and data/dashboard_snapshot.json;
   * appends events to data/alerts_log.jsonl
     {event_ts, detected_ts, type, ticker, details, notified:false}.
-When flat it only reads portfolio.json and touches a heartbeat file (no network).
+When flat, or when every open position's market is closed, it only reads
+portfolio.json and touches a heartbeat file (no network).
 """
 
 from __future__ import annotations
@@ -46,9 +51,8 @@ from quotes import now_london, to_london, StaleQuoteError
 from bar_checks import check_position, floor_minute, BAR
 from alerts import append_alert
 import emulator as emu_mod
+import pnl
 
-WINDOW_START = (8, 0)
-WINDOW_END = (21, 0)
 NO_TRIGGER_EVERY_S = 30 * 60
 
 
@@ -69,20 +73,37 @@ def _write_json(path: str, obj) -> None:
     os.replace(tmp, path)
 
 
-def in_window(now: datetime) -> bool:
-    now = to_london(now)
-    if now.weekday() >= 5:
-        return False
-    hm = (now.hour, now.minute)
-    return WINDOW_START <= hm < WINDOW_END
+def market_state(ticker: str, now: datetime):
+    """('open'|'final'|'closed'|'unknown', Exchange|None, window)."""
+    inst = instruments.lookup(ticker)
+    if inst is None:
+        return "unknown", None, None
+    try:
+        ex = instruments.exchange_of(inst)
+    except instruments.NoSessionDataError:
+        return "unknown", None, None
+    st, w = ex.state(now)
+    return st, ex, w
 
 
-# ─── day accounting ──────────────────────────────────────────────────
+def due_tickers(positions: dict, now: datetime, final_done: dict) -> tuple[list, list]:
+    """Tickers needing a bar check now, and final-check keys consumed.
+    'unknown' (legacy, no session data) is always checked — conservative."""
+    due, keys = [], []
+    for tkr in positions:
+        st, ex, w = market_state(tkr, now)
+        if st in ("open", "unknown"):
+            due.append(tkr)
+        elif st == "final":
+            key = f"{tkr}@{w[1].isoformat()}"
+            if key not in final_done:
+                due.append(tkr)
+                keys.append(key)
+    return due, keys
+
 
 def day_realised(emu, day: date) -> float:
-    d = day.isoformat()
-    return sum(t.pnl for t in emu.trade_history
-               if t.action == "SELL" and str(t.timestamp)[:10] == d)
+    return pnl.realised_on(emu.trade_history, day)
 
 
 def _pos_rows(emu) -> list[dict]:
@@ -113,7 +134,7 @@ def write_status(emu, data_dir: str, now: datetime, closed: list, action: str,
     ls = _read_json(ls_path, {})
     today = now.date()
     realised_today = day_realised(emu, today)
-    unreal = sum(p.quantity * (p.current_price - p.avg_entry_price) for p in emu.positions.values())
+    unreal = pnl.open_mtm(emu.positions.values())
     day_pnl = round(realised_today + unreal, 2)
     if halted is None:
         halted = bool(ls.get("halted")) and (ls.get("halted_date") or str(ls.get("as_of", ""))[:10]) == today.isoformat()
@@ -195,13 +216,38 @@ def rollover_if_new_day(data_dir: str, now: datetime) -> bool:
 
 # ─── one live pass ───────────────────────────────────────────────────
 
+def _heartbeat(data_dir: str, now: datetime, extra: Optional[dict] = None) -> None:
+    os.makedirs(data_dir, exist_ok=True)
+    hb = {"at": now.isoformat(), "pid": os.getpid(), **(extra or {})}
+    tmp = os.path.join(data_dir, f"monitor_heartbeat.json.tmp.{os.getpid()}")
+    with open(tmp, "w") as f:
+        json.dump(hb, f)
+    os.replace(tmp, os.path.join(data_dir, "monitor_heartbeat.json"))
+
+
+def _flatten(emu, tkr: str, now: datetime, data_dir: str, why: str):
+    """Sell one position on a fresh quote; fall back to the last 1m close."""
+    pos = emu.positions[tkr]
+    try:
+        tr = emu.execute_sell(tkr, why, status="closed")
+    except Exception as e:  # noqa: BLE001  (stale quote / fetch failure)
+        last_bar = to_london(pos.last_check) - BAR if pos.last_check else now
+        tr = emu.execute_sell(tkr, f"{why} at last 1m close (fresh quote unavailable: {e})",
+                              fill_price=pos.current_price, fill_ts=now,
+                              quote_ts=last_bar, quote_source="yfinance_1m_bar_close_fallback",
+                              status="closed")
+    if tr:
+        append_alert(data_dir, "exit", tkr, {"trade_id": tr.id, "reason": why, "price": tr.price,
+                                             "pnl": tr.pnl, "quote_ts": tr.quote_ts},
+                     event_ts=now, detected_ts=now)
+    return tr
+
+
 def run_once(data_dir: Optional[str] = None, now: Optional[datetime] = None,
              bars_fn: Optional[Callable] = None, quote_fn: Optional[Callable] = None) -> dict:
     data_dir = data_dir or emu_mod.DATA_DIR
     now = to_london(now or now_london())
-    os.makedirs(data_dir, exist_ok=True)
-    with open(os.path.join(data_dir, "monitor_heartbeat.json"), "w") as f:
-        json.dump({"at": now.isoformat(), "pid": os.getpid()}, f)
+    _heartbeat(data_dir, now)
 
     lock = open(os.path.join(data_dir, ".monitor.lock"), "w")
     try:
@@ -211,58 +257,78 @@ def run_once(data_dir: Optional[str] = None, now: Optional[datetime] = None,
     try:
         rolled = rollover_if_new_day(data_dir, now)
         port = _read_json(os.path.join(data_dir, "portfolio.json"), {})
-        if not port.get("positions"):
-            # Idle-cheap path: no network, no emulator, no rewrites.
-            return {"action": "flat", "rolled": rolled}
+        positions = port.get("positions") or {}
+        if not positions:
+            return {"action": "flat", "rolled": rolled}   # idle: no network
+
+        st_path = os.path.join(data_dir, "monitor_state.json")
+        st = _read_json(st_path, {})
+        final_done = st.setdefault("final_checks_done", {})
+        pending = [t for t in st.get("pending_flatten", []) if t in positions]
+        due, final_keys = due_tickers(positions, now, final_done)
+        pending_open = [t for t in pending if market_state(t, now)[0] in ("open", "unknown")]
+        if not due and not pending_open:
+            return {"action": "markets_closed", "open_positions": sorted(positions),
+                    "rolled": rolled}                     # idle: no network
 
         emu = emu_mod.PaperTradingEmulator(data_dir=data_dir if data_dir != emu_mod.DATA_DIR else None,
                                            bars_fn=bars_fn, quote_fn=quote_fn,
                                            now_fn=lambda: now)
         emu.requote_wait_s = 3.0
-        closed = emu.check_stops_and_targets(now)
+        closed = emu.check_stops_and_targets(now, tickers=due)
+        for k in final_keys:
+            final_done[k] = now.isoformat()
+        # keep the final-check ledger small
+        cutoff = (now - timedelta(days=4)).isoformat()
+        st["final_checks_done"] = {k: v for k, v in final_done.items() if v >= cutoff}
+
         ls = _read_json(os.path.join(data_dir, "live_status.json"), {})
         today = now.date()
-        already_halted = bool(ls.get("halted")) and ls.get("halted_date") == today.isoformat()
-        unreal = sum(p.quantity * (p.current_price - p.avg_entry_price) for p in emu.positions.values())
-        day_pnl = day_realised(emu, today) + unreal
+        already_halted = pnl.halted_on(ls, today)
+        day_pnl = pnl.day_pnl(emu.trade_history, emu.positions.values(), today)
         action, reason, halted = "no_change", "no stop/target touched", None
         if closed:
             action = "exits_booked"
             reason = "; ".join(f"{t.ticker} {t.status} @ {t.price:.4f} (P&L {t.pnl:+.2f})" for t in closed)
 
-        if day_pnl <= config.DAILY_STOP_LOSS and not already_halted:
-            flat = []
-            for tkr in list(emu.positions.keys()):
-                pos = emu.positions[tkr]
-                try:
-                    tr = emu.execute_sell(tkr, "halt: day P&L <= -£200, flatten all",
-                                          status="closed")
-                except Exception as e:  # noqa: BLE001  (stale quote / fetch failure)
-                    last_bar = to_london(pos.last_check) - BAR if pos.last_check else now
-                    tr = emu.execute_sell(tkr, f"halt flatten at last 1m close (fresh quote unavailable: {e})",
-                                          fill_price=pos.current_price, fill_ts=now,
-                                          quote_ts=last_bar, quote_source="yfinance_1m_bar_close_fallback",
-                                          status="closed")
+        # queued flattens (halt hit while their market was closed)
+        for tkr in [t for t in pending if t in emu.positions]:
+            if market_state(tkr, now)[0] in ("open", "unknown"):
+                tr = _flatten(emu, tkr, now, data_dir, "halt: queued flatten at market open")
                 if tr:
-                    flat.append(tr)
-                    append_alert(data_dir, "exit", tkr, {"trade_id": tr.id, "reason": "halt_flatten",
-                                                         "price": tr.price, "pnl": tr.pnl,
-                                                         "quote_ts": tr.quote_ts},
-                                 event_ts=now, detected_ts=now)
+                    closed.append(tr)
+                    pending.remove(tkr)
+                    action = "pending_flatten_done"
+
+        if day_pnl <= config.DAILY_STOP_LOSS and not already_halted:
+            flat, queued = [], []
+            for tkr in list(emu.positions.keys()):
+                if market_state(tkr, now)[0] in ("open", "final", "unknown"):
+                    tr = _flatten(emu, tkr, now, data_dir, "halt: day P&L <= -£200, flatten all")
+                    if tr:
+                        flat.append(tr)
+                else:
+                    queued.append(tkr)
+                    if tkr not in pending:
+                        pending.append(tkr)
             closed += flat
-            day_pnl = day_realised(emu, today)
+            day_pnl = pnl.day_pnl(emu.trade_history, emu.positions.values(), today)
             append_alert(data_dir, "halt", "*", {"day_pnl": round(day_pnl, 2),
                                                 "limit": config.DAILY_STOP_LOSS,
-                                                "flattened": [t.id for t in flat]},
+                                                "flattened": [t.id for t in flat],
+                                                "queued_until_market_open": queued},
                          event_ts=now, detected_ts=now)
             action, halted = "halt_flatten_all", True
-            reason = f"day P&L {day_pnl:+.2f} <= {config.DAILY_STOP_LOSS:.2f}: flattened {len(flat)}; " + reason
+            reason = (f"day P&L {day_pnl:+.2f} <= {config.DAILY_STOP_LOSS:.2f} (all markets, GBP): "
+                      f"flattened {len(flat)}, queued {queued}; " + reason)
+        st["pending_flatten"] = pending
 
-        # periodic no_trigger heartbeat per open ticker
-        st_path = os.path.join(data_dir, "monitor_state.json")
-        st = _read_json(st_path, {})
+        # periodic no_trigger heartbeat per checked ticker
         nt = st.setdefault("last_no_trigger", {})
-        for tkr, pos in emu.positions.items():
+        for tkr in due:
+            if tkr not in emu.positions:
+                continue
+            pos = emu.positions[tkr]
             last = nt.get(tkr)
             if not last or (now - to_london(last)).total_seconds() >= NO_TRIGGER_EVERY_S:
                 append_alert(data_dir, "no_trigger", tkr,
@@ -272,14 +338,21 @@ def run_once(data_dir: Optional[str] = None, now: Optional[datetime] = None,
                 nt[tkr] = now.isoformat()
         _write_json(st_path, st)
 
-        write_status(emu, data_dir, now, closed, action, reason, halted=halted)
-        return {"action": action, "closed": [t.id for t in closed], "day_pnl": round(day_pnl, 2)}
+        ls = write_status(emu, data_dir, now, closed, action, reason, halted=halted)
+        if pending:
+            ls["pending_flatten"] = pending
+            _write_json(os.path.join(data_dir, "live_status.json"), ls)
+        return {"action": action, "checked": due, "closed": [t.id for t in closed],
+                "day_pnl": round(day_pnl, 2), "pending_flatten": pending}
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
 
 def loop(data_dir: Optional[str] = None) -> None:
+    """Around-the-clock loop (Risk SOP v2.2). Every minute (5s past) it writes a
+    heartbeat and runs a pass; the pass only touches the network for positions
+    whose exchange is open or in its post-close final-check window."""
     # Singleton: hold an exclusive lock for the loop's lifetime so a second
     # loop (e.g. started by another job) exits instead of double-running.
     ddir = data_dir or emu_mod.DATA_DIR
@@ -295,23 +368,24 @@ def loop(data_dir: Optional[str] = None) -> None:
     loop_lock.truncate()
     loop_lock.write(str(os.getpid()))
     loop_lock.flush()
-    print(f"[monitor] loop start pid={os.getpid()} at {now_london().isoformat()}", flush=True)
-    last_log = 0.0
+    print(f"[monitor] loop start pid={os.getpid()} at {now_london().isoformat()} (24x5 market-aware)",
+          flush=True)
+    last_log, last_action = 0.0, None
     while True:
         now = now_london()
-        if in_window(now):
-            try:
-                res = run_once(data_dir, now)
-                if res.get("action") not in ("flat", "no_change") or time.time() - last_log > 1800:
-                    print(f"[monitor] {now:%Y-%m-%d %H:%M:%S} {res}", flush=True)
-                    last_log = time.time()
-            except Exception:  # noqa: BLE001
-                print(f"[monitor] {now:%H:%M:%S} ERROR\n{traceback.format_exc()}", flush=True)
-            # wake 5s after the next minute boundary so the just-closed bar is available
-            nxt = (now + timedelta(minutes=1)).replace(second=5, microsecond=0)
-            time.sleep(max(1.0, (nxt - now_london()).total_seconds()))
-        else:
-            time.sleep(60)
+        try:
+            res = run_once(data_dir, now)
+            act = res.get("action")
+            quiet = act in ("flat", "no_change", "markets_closed") and act == last_action
+            if not quiet or time.time() - last_log > 1800:
+                print(f"[monitor] {now:%Y-%m-%d %H:%M:%S} {res}", flush=True)
+                last_log = time.time()
+            last_action = act
+        except Exception:  # noqa: BLE001
+            print(f"[monitor] {now:%H:%M:%S} ERROR\n{traceback.format_exc()}", flush=True)
+        # wake 5s after the next minute boundary so the just-closed bar is available
+        nxt = (now + timedelta(minutes=1)).replace(second=5, microsecond=0)
+        time.sleep(max(1.0, (nxt - now_london()).total_seconds()))
 
 
 # ─── replay ──────────────────────────────────────────────────────────
@@ -333,7 +407,7 @@ def replay_day(day: str, specs: list[dict], bars_loader: Callable[[str, str], "p
     for sp in specs:
         inst = instruments.resolve(sp["ticker"])
         bars = bars_loader(inst.yf_symbol, day)
-        to_book = inst.to_major
+        to_book = inst.to_major   # levels in major units of the trading currency
         opened = to_london(sp["opened_at"])
         events.append({"event_ts": opened.isoformat(), "detected_ts": opened.isoformat(),
                        "type": "fill", "ticker": inst.yf_symbol,

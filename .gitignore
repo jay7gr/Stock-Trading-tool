@@ -21,3 +21,13 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local ops / secrets (never commit)
+.venv*/
+.env.*
+*.pem
+Caddyfile
+credentials*.txt
+*.pid
+url.txt
+tests/fixtures/*.tmp

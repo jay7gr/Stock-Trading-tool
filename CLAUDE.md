@@ -75,10 +75,16 @@ All optional. Tool works with zero keys (yfinance + StockTwits + Reddit only).
 - emulator.py: Paper trading; stops/targets checked on 1m bar High/Low (bar_checks.py);
   fills need a <=60s quote (quotes.py) and must match the ticket in instruments.py
 - instruments.py: Instrument registry (ISIN, listing, currency, GBX/GBP/USD unit, yf + Freetrade tickers)
+  + exchange sessions (LSE, XETRA, Euronext Paris/Amsterdam, NYSE, NASDAQ, TSE, HKEX, ASX; tz/DST aware)
 - bar_checks.py: Bar-based stop/target rules (stop wins; gap fills at Open; bad-tick guard)
 - quotes.py: Timestamped quotes, 1m bars, freshness enforcement, 429 backoff
-- monitor.py: 1-min stop/target monitor loop + `--replay DATE --position SYM:entry:stop:target:opened`
+- monitor.py: 1-min stop/target monitor loop (24x5, market-aware: network only for positions whose
+  exchange is open + one final check after close; one -£200 day halt across all markets in GBP;
+  halts on closed markets are queued and flattened at next open)
+  + `--replay DATE --position SYM:entry:stop:target:opened`
   (runs via /workspace/dash/start_monitor.sh; pidfile /workspace/dash/monitor.pid)
+- market_hours.py: `coverage(ticker)` pre-fill check (session data, market open, monitor heartbeat)
+- pnl.py: day P&L (London day, realised + open MTM, GBP) + GBP formatting for the dashboard/monitor
 - alerts.py: data/alerts_log.jsonl event log
 - tests/: pytest suite (fixture: real ISPY.L 1m bars 2026-09-25)
 - broker_t212.py: Trading 212 REST client

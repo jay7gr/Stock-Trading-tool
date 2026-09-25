@@ -36,6 +36,8 @@ def make_emulator(tmp_path):
             if isinstance(v, list):
                 return v.pop(0) if v else None
             return v
+        (tmp_path / "monitor_heartbeat.json").write_text(
+            '{"at": "%s", "pid": 0}' % now.isoformat())   # live monitor (SOP v2.2)
         e = emulator.PaperTradingEmulator(data_dir=str(tmp_path), quote_fn=quote_fn,
                                           bars_fn=bars_fn, now_fn=lambda: now)
         e.requote_wait_s = 0

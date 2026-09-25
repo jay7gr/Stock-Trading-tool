@@ -12,6 +12,8 @@ Post-2026-09-25 safeguards:
     are re-quoted once, then rejected (StaleQuoteError).
   * Every ticket/fill resolves through instruments.py and must match the
     ticket's ISIN, listing and currency (InstrumentMismatchError otherwise).
+  * Risk SOP v2.2: fills need exchange session data, an open market and a
+    live stop/target monitor heartbeat (MarketNotCoveredError otherwise).
 """
 
 import json
@@ -24,7 +26,9 @@ from typing import Callable, Optional
 import config
 from market_data import get_current_price
 import instruments
-from instruments import InstrumentMismatchError, UnknownInstrumentError
+from instruments import InstrumentMismatchError, UnknownInstrumentError, NoSessionDataError
+import market_hours
+from market_hours import MarketNotCoveredError
 import quotes
 from quotes import Quote, StaleQuoteError, now_london, to_london
 from bar_checks import check_position, floor_minute
@@ -124,7 +128,7 @@ class PaperTradingEmulator:
         self.write_alerts = write_alerts
         self.requote_wait_s = 5.0
         self.last_events: list[dict] = []
-        self._fx_cache: Optional[tuple[float, float]] = None  # (rate, fetched_monotonic)
+        self._fx_cache: dict = {}  # ccy -> (rate, fetched_monotonic)
         self.cash = config.INITIAL_CAPITAL
         self.positions: dict[str, Position] = {}
         self.trade_history: list[Trade] = []
@@ -148,13 +152,20 @@ class PaperTradingEmulator:
             except Exception as e:  # noqa: BLE001
                 print(f"[Emulator] alert log failed: {e}")
 
-    def _gbpusd(self) -> float:
-        if self._fx_cache and time.monotonic() - self._fx_cache[1] < 60:
-            return self._fx_cache[0]
-        q = quotes.get_fresh_quote("GBPUSD=X", at=to_london(self.now_fn()), max_age_s=FX_MAX_AGE_S,
+    def _fx(self, ccy: str) -> float:
+        """Units of `ccy` per 1 GBP (GBP{ccy}=X), cached 60s per currency."""
+        cache = self._fx_cache if isinstance(self._fx_cache, dict) else {}
+        hit = cache.get(ccy)
+        if hit and time.monotonic() - hit[1] < 60:
+            return hit[0]
+        q = quotes.get_fresh_quote(f"GBP{ccy}=X", at=to_london(self.now_fn()), max_age_s=FX_MAX_AGE_S,
                                    fetch=self.quote_fn, requote_wait_s=self.requote_wait_s)
-        self._fx_cache = (float(q.price), time.monotonic())
-        return self._fx_cache[0]
+        cache[ccy] = (float(q.price), time.monotonic())
+        self._fx_cache = cache
+        return cache[ccy][0]
+
+    def _gbpusd(self) -> float:
+        return self._fx("USD")
 
     def _book_price(self, ticker: str, raw: float, reference_gbp: Optional[float] = None) -> float:
         """Vendor quote -> GBP book price. Registry first (knows GBX vs GBP vs USD);
@@ -164,8 +175,8 @@ class PaperTradingEmulator:
         inst = instruments.lookup(ticker)
         if inst is None:
             return _to_book_gbp(ticker, raw, reference_gbp)
-        if inst.currency == "USD":
-            return inst.to_book_gbp(raw, self._gbpusd())
+        if inst.currency != "GBP":
+            return inst.to_book_gbp(raw, fx=self._fx(inst.currency))
         return inst.to_book_gbp(raw)
 
     def _read_live_status(self) -> dict:
@@ -205,9 +216,15 @@ class PaperTradingEmulator:
         try:
             inst = instruments.assert_fill_matches_ticket(
                 ticket_symbol, ticker, ticket_isin, ticket_listing, ticket_currency)
-        except (InstrumentMismatchError, UnknownInstrumentError) as e:
+        except (InstrumentMismatchError, UnknownInstrumentError, NoSessionDataError) as e:
             self._alert("skip", ticker, {"reason": "instrument_check_failed",
                                          "ticket": ticket_symbol, "error": str(e)})
+            raise
+        # Risk SOP v2.2: market must be open and its hours covered by the live monitor.
+        try:
+            market_hours.require_fill_coverage(inst.symbol, at=now, data_dir=self.data_dir)
+        except MarketNotCoveredError as e:
+            self._alert("skip", ticker, {"reason": "market_not_covered", "error": str(e)})
             raise
         if quote is not None and quote.symbol.upper() != inst.yf_symbol.upper():
             err = InstrumentMismatchError(
@@ -348,7 +365,8 @@ class PaperTradingEmulator:
         self._save_state()
         return trade
 
-    def check_stops_and_targets(self, now: Optional[datetime] = None) -> list[Trade]:
+    def check_stops_and_targets(self, now: Optional[datetime] = None,
+                                tickers: Optional[list] = None) -> list[Trade]:
         """Check all positions for stop-loss / take-profit hits using 1m bars.
 
         For each position, pull 1m bars since max(floor(opened_at), last_check).
@@ -360,6 +378,8 @@ class PaperTradingEmulator:
         exits = []
 
         for ticker, pos in self.positions.items():
+            if tickers is not None and ticker not in tickers:
+                continue   # market closed: keep last mark, no network
             inst = instruments.lookup(ticker)
             yf_sym = inst.yf_symbol if inst else ticker
             since = floor_minute(to_london(pos.opened_at)) if pos.opened_at else now

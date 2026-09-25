@@ -210,3 +210,6 @@ MIN_CONSENSUS_SCORE = 7.0            # Out of 10 — minimum to execute
 
 # ─── Mode ─────────────────────────────────────────────────────────────
 EMULATOR_MODE = True                 # Set False when connected to Trading 212
+
+# ─── Fill safeguards (post 2026-09-25 postmortem) ────────────────────
+MAX_QUOTE_AGE_S = 60                 # every fill needs a quote <= 60s old (re-quote once, else reject)

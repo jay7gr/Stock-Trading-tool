@@ -1,5 +1,6 @@
 # Data files (trade history, portfolio state)
 data/
+data_backup_*/
 
 # Python
 __pycache__/

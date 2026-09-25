@@ -14,6 +14,8 @@ from ai_analyst import claude_analyse, grok_analyse
 from consensus import make_decision, TradeDecision
 from risk_manager import RiskManager
 from emulator import PaperTradingEmulator
+from instruments import InstrumentMismatchError, UnknownInstrumentError
+from quotes import StaleQuoteError
 from broker_t212 import Trading212Client
 from notifications import Notifier
 
@@ -163,42 +165,61 @@ class TradingEngine:
         return decisions
 
     def _execute_buy(self, ticker, decision, claude_result, grok_result, price):
-        """Execute a buy — paper or live."""
+        """Execute a buy — paper or live.
+
+        Paper fills go through the instrument registry (ticket must match the
+        fill's ISIN/listing/currency) and need a quote <=60s old; failures are
+        logged as `skip` alerts and the buy is not booked.
+        """
         if config.EMULATOR_MODE or not self.broker:
+            try:
+                return self._paper_buy(ticker, decision, claude_result, grok_result, price)
+            except (InstrumentMismatchError, UnknownInstrumentError, StaleQuoteError) as e:
+                print(f"[BUY REJECTED] {ticker}: {e}")
+                return None
+        return self._live_buy(ticker, decision, claude_result, grok_result, price)
+
+    def _paper_buy(self, ticker, decision, claude_result, grok_result, price):
+        return self.emulator.execute_buy(
+            ticker=ticker,
+            size_gbp=decision.position_size_gbp,
+            price=price,
+            stop_loss=decision.stop_loss,
+            take_profit=decision.take_profit,
+            reasoning=decision.reasoning,
+            claude_score=claude_result.score,
+            grok_score=grok_result.score,
+            combined_score=decision.combined_score,
+            ticket_symbol=ticker,
+        )
+
+    def _live_buy(self, ticker, decision, claude_result, grok_result, price):
+        # Live execution via Trading 212 (never reached while EMULATOR_MODE=True)
+        result = self.broker.place_value_order(ticker, decision.position_size_gbp)
+        if result.success:
+            print(f"[LIVE BUY] {ticker} | £{result.value_gbp:.2f} @ {result.price:.2f}")
+            # Also record in emulator for tracking
             return self.emulator.execute_buy(
-                ticker=ticker,
-                size_gbp=decision.position_size_gbp,
-                price=price,
-                stop_loss=decision.stop_loss,
+                ticker=ticker, size_gbp=result.value_gbp,
+                price=result.price, stop_loss=decision.stop_loss,
                 take_profit=decision.take_profit,
                 reasoning=decision.reasoning,
                 claude_score=claude_result.score,
                 grok_score=grok_result.score,
                 combined_score=decision.combined_score,
+                ticket_symbol=ticker,
             )
-        else:
-            # Live execution via Trading 212
-            result = self.broker.place_value_order(ticker, decision.position_size_gbp)
-            if result.success:
-                print(f"[LIVE BUY] {ticker} | £{result.value_gbp:.2f} @ {result.price:.2f}")
-                # Also record in emulator for tracking
-                return self.emulator.execute_buy(
-                    ticker=ticker, size_gbp=result.value_gbp,
-                    price=result.price, stop_loss=decision.stop_loss,
-                    take_profit=decision.take_profit,
-                    reasoning=decision.reasoning,
-                    claude_score=claude_result.score,
-                    grok_score=grok_result.score,
-                    combined_score=decision.combined_score,
-                )
-            else:
-                print(f"[LIVE BUY FAILED] {ticker}: {result.message}")
-                return None
+        print(f"[LIVE BUY FAILED] {ticker}: {result.message}")
+        return None
 
     def _execute_sell(self, ticker, reason):
         """Execute a sell — paper or live."""
         if config.EMULATOR_MODE or not self.broker:
-            return self.emulator.execute_sell(ticker, reason)
+            try:
+                return self.emulator.execute_sell(ticker, reason)
+            except StaleQuoteError as e:
+                print(f"[SELL DEFERRED] {ticker}: {e}")
+                return None
         else:
             result = self.broker.sell_position(ticker)
             if result.success:

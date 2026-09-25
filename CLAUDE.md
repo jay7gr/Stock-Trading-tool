@@ -72,7 +72,15 @@ All optional. Tool works with zero keys (yfinance + StockTwits + Reddit only).
 - strategies.py: Momentum, mean reversion, breakout, ETF rotation
 - ai_analyst.py: Conservative + aggressive local scoring engines
 - consensus.py: Dual-engine consensus with specialised mode
-- emulator.py: Paper trading with stop/target auto-execution
+- emulator.py: Paper trading; stops/targets checked on 1m bar High/Low (bar_checks.py);
+  fills need a <=60s quote (quotes.py) and must match the ticket in instruments.py
+- instruments.py: Instrument registry (ISIN, listing, currency, GBX/GBP/USD unit, yf + Freetrade tickers)
+- bar_checks.py: Bar-based stop/target rules (stop wins; gap fills at Open; bad-tick guard)
+- quotes.py: Timestamped quotes, 1m bars, freshness enforcement, 429 backoff
+- monitor.py: 1-min stop/target monitor loop + `--replay DATE --position SYM:entry:stop:target:opened`
+  (runs via /workspace/dash/start_monitor.sh; pidfile /workspace/dash/monitor.pid)
+- alerts.py: data/alerts_log.jsonl event log
+- tests/: pytest suite (fixture: real ISPY.L 1m bars 2026-09-25)
 - broker_t212.py: Trading 212 REST client
 - notifications.py: Telegram + email alerts
 - portfolio.py: Benchmark comparison vs VUSA

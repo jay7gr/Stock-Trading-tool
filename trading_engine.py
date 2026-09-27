@@ -13,7 +13,8 @@ from strategies import generate_all_signals
 from ai_analyst import claude_analyse, grok_analyse
 from consensus import make_decision, TradeDecision
 from risk_manager import RiskManager
-from emulator import PaperTradingEmulator
+from emulator import PaperTradingEmulator, InvalidLevelsError
+import instruments
 from instruments import InstrumentMismatchError, UnknownInstrumentError, NoSessionDataError
 from market_hours import MarketNotCoveredError
 from quotes import StaleQuoteError
@@ -176,18 +177,32 @@ class TradingEngine:
             try:
                 return self._paper_buy(ticker, decision, claude_result, grok_result, price)
             except (InstrumentMismatchError, UnknownInstrumentError, NoSessionDataError,
-                    MarketNotCoveredError, StaleQuoteError) as e:
+                    MarketNotCoveredError, StaleQuoteError, InvalidLevelsError) as e:
                 print(f"[BUY REJECTED] {ticker}: {e}")
                 return None
         return self._live_buy(ticker, decision, claude_result, grok_result, price)
 
     def _paper_buy(self, ticker, decision, claude_result, grok_result, price):
+        # decision levels are derived from the raw vendor price (pence for GBX
+        # lines, USD for USD lines). Convert to the line's major currency and
+        # say which currency they are in, so a 3477p stop is never read as £3477
+        # and a $429 stop is never compared against a GBP mark.
+        inst = instruments.lookup(ticker)
+        if inst is not None:
+            stop, target = inst.to_major(decision.stop_loss), inst.to_major(decision.take_profit)
+            ref_price, lvl_ccy = inst.to_major(price), inst.currency
+        else:
+            stop, target, ref_price, lvl_ccy = decision.stop_loss, decision.take_profit, price, None
+        ref_gbp = None
+        if inst is not None and inst.currency == "GBP":
+            ref_gbp = ref_price
         return self.emulator.execute_buy(
             ticker=ticker,
             size_gbp=decision.position_size_gbp,
-            price=price,
-            stop_loss=decision.stop_loss,
-            take_profit=decision.take_profit,
+            price=ref_gbp,
+            stop_loss=stop,
+            take_profit=target,
+            levels_ccy=lvl_ccy,
             reasoning=decision.reasoning,
             claude_score=claude_result.score,
             grok_score=grok_result.score,

@@ -94,6 +94,18 @@ def _pnl_style(v):
     return ""
 
 
+def _level_str(pos, level):
+    """Stop/target: GBP book levels as £x.xx; native (e.g. USD) levels as '$x.xx (≈£y.yy)'."""
+    if not level:
+        return "-"
+    ccy = getattr(pos, "level_ccy", "") or "GBP"
+    if ccy == "GBP":
+        return fmt_gbp(level)
+    sym = {"USD": "$", "EUR": "€", "JPY": "¥"}.get(ccy, ccy + " ")
+    gbp = engine.emulator.level_to_gbp(pos, level)
+    return f"{sym}{level:,.2f}" + (f" (≈{fmt_gbp(gbp)})" if gbp else "")
+
+
 def _styled(df, cols):
     cols = [c for c in cols if c in df.columns]
     return df.style.map(_pnl_style, subset=cols) if cols and not df.empty else df
@@ -114,7 +126,8 @@ with cols[2]:
 with cols[3]:
     st.metric("Today's P&L", fmt_gbp(day_pnl_gbp),
               delta=f"{fmt_gbp(day_pnl_gbp, signed=True)} today" if day_pnl_gbp else None,
-              help="Realised P&L booked today (London day) + open mark-to-market, all markets, GBP.")
+              help="SOP v2.3: realised today (London day) + change in open mark-to-market since the "
+                   "previous close (since entry for positions opened today), all markets, GBP.")
     if is_halted:
         st.badge("HALTED", icon=":material/block:", color="red")
     else:
@@ -229,8 +242,8 @@ with tab_positions:
                 "Value": fmt_gbp(pos.value_gbp),
                 "P&L": fmt_gbp(pos.unrealised_pnl, signed=True),
                 "P&L %": f"{pos.unrealised_pnl_pct:+.1f}%",
-                "Stop": f"£{pos.stop_loss:.2f}",
-                "Target": f"£{pos.take_profit:.2f}",
+                "Stop": _level_str(pos, pos.stop_loss),
+                "Target": _level_str(pos, pos.take_profit),
             })
         st.dataframe(_styled(pd.DataFrame(pos_data), ["P&L", "P&L %"]),
                      use_container_width=True, hide_index=True)

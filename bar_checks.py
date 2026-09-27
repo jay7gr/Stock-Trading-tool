@@ -47,6 +47,7 @@ class BarExit:
     bar_low: float
     bar_close: float
     skipped_bad_ticks: tuple = ()
+    gbp_price: Optional[float] = None   # set by the emulator when levels are in a non-GBP currency
 
     def to_dict(self) -> dict:
         d = asdict(self)

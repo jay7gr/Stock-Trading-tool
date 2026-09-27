@@ -27,6 +27,23 @@ ISIN sources (checked 2026-09-25):
         2026-07-13). Freetrade US/XOM shows "ExxonMobil Holdings Corp".
 Quote units cross-checked against yfinance fast_info.currency on
 2026-09-25: CIBR.L=USD, ISPY.L=GBp, IESU.L=GBp, VUSA.L=GBP, XOM=USD.
+
+Monday 28 Sep 2026 shortlist (checked 2026-09-27; OpenFIGI v3 /mapping by
+ISIN, Freetrade public universe pages, yfinance chart metadata):
+  TSM   US8740391003  OpenFIGI BBG000BD8ZK0 "TAIWAN SEMICONDUCTOR-SP ADR"
+        (ADR, US); yfinance TSM exchangeName NYQ (NYSE), USD; Freetrade US/TSM
+        "Taiwan Semiconductor Manufacturing Company Ltd (ADR)".
+  SHEL  GB00BP6MXD84  OpenFIGI BBG0149N4YC8 "SHELL PLC" LN; yfinance SHEL.L
+        LSE, currency GBp (pence); Freetrade GB/SHEL "Shell Plc" (£36.14).
+        NB Yahoo "SHEL" is the NYSE ADR (USD, ~$95.78): NOT this instrument.
+        The ticket symbol SHEL resolves to the LSE line (yf SHEL.L) only.
+        UK stamp duty 0.5% applies on purchase (Risk ticket, SOP v2.3).
+  WMT   US9311421039  OpenFIGI BBG000BWXBC2 "WALMART INC"; listing moved
+        NYSE -> Nasdaq Global Select on 2025-12-09 (Walmart/Nasdaq press
+        releases 2025-11-20 and 2025-12-09; 8-K). yfinance WMT exchangeName
+        NMS (NasdaqGS), USD; Freetrade US/WMT "Walmart Inc".
+  MSFT  US5949181045  OpenFIGI BBG000BPH459 "MICROSOFT CORP"; yfinance NMS
+        (NasdaqGS), USD; Freetrade US/MSFT "Microsoft Corp".
 """
 
 from __future__ import annotations
@@ -174,6 +191,7 @@ class Instrument:
     freetrade_verified: bool = True
     former_isins: tuple = field(default_factory=tuple)
     sources: tuple = field(default_factory=tuple)
+    purchase_tax_pct: float = 0.0   # e.g. UK stamp duty 0.005 on UK shares (not ETFs)
 
     def to_major(self, raw_price: float) -> float:
         """Vendor quote -> major currency units (GBX pence -> GBP pounds)."""
@@ -260,6 +278,52 @@ REGISTRY: dict[str, Instrument] = {
             "https://kase.kz/en/information/news/show/1570546",
             "https://www.eurex.com/ex-en/rules-regs/corporate-actions/corporate-action-information/Exxon-Mobil-Corporation-Name-Change-ISIN-Change-5377362",
             "https://web.freetrade.io/universe/US/XOM",
+        ),
+    ),
+    "TSM": Instrument(
+        symbol="TSM",
+        name="Taiwan Semiconductor Manufacturing Co Ltd (ADR)",
+        isin="US8740391003", exchange="NYSE", listing="NYSE:USD",
+        currency="USD", quote_unit="USD",
+        yf_symbol="TSM", freetrade_ticker="TSM",
+        sources=(
+            "https://api.openfigi.com/v3/mapping (ID_ISIN US8740391003 -> BBG000BD8ZK0, ADR, 2026-09-27)",
+            "https://web.freetrade.io/universe/US/TSM",
+        ),
+    ),
+    "SHEL": Instrument(
+        symbol="SHEL",
+        name="Shell plc (LSE ordinary shares, GBX line)",
+        isin="GB00BP6MXD84", exchange="LSE", listing="LSE:GBX",
+        currency="GBP", quote_unit="GBX",     # Yahoo SHEL.L quotes in pence (GBp)
+        yf_symbol="SHEL.L", freetrade_ticker="SHEL",
+        purchase_tax_pct=0.005,               # UK stamp duty (SDRT) on purchase
+        sources=(
+            "https://api.openfigi.com/v3/mapping (ID_ISIN GB00BP6MXD84 LN -> BBG0149N4YC8 SHELL PLC, 2026-09-27)",
+            "https://web.freetrade.io/universe/GB/SHEL",
+        ),
+    ),
+    "WMT": Instrument(
+        symbol="WMT",
+        name="Walmart Inc",
+        isin="US9311421039", exchange="NASDAQ", listing="NASDAQ:USD",   # moved from NYSE 2025-12-09
+        currency="USD", quote_unit="USD",
+        yf_symbol="WMT", freetrade_ticker="WMT",
+        sources=(
+            "https://api.openfigi.com/v3/mapping (ID_ISIN US9311421039 -> BBG000BWXBC2 WALMART INC, 2026-09-27)",
+            "https://www.nasdaq.com/press-release/walmart-debuts-nasdaq-marking-its-first-day-trading-2025-12-09",
+            "https://web.freetrade.io/universe/US/WMT",
+        ),
+    ),
+    "MSFT": Instrument(
+        symbol="MSFT",
+        name="Microsoft Corp",
+        isin="US5949181045", exchange="NASDAQ", listing="NASDAQ:USD",
+        currency="USD", quote_unit="USD",
+        yf_symbol="MSFT", freetrade_ticker="MSFT",
+        sources=(
+            "https://api.openfigi.com/v3/mapping (ID_ISIN US5949181045 -> BBG000BPH459 MICROSOFT CORP, 2026-09-27)",
+            "https://web.freetrade.io/universe/US/MSFT",
         ),
     ),
 }

@@ -1,8 +1,20 @@
 """Day P&L (GBP, London calendar day) and GBP formatting — shared by the
 dashboard and the monitor so both show the same number.
 
-day P&L = realised P&L of SELLs booked on the London day
-        + mark-to-market of all open positions vs entry (all markets, GBP).
+Risk SOP v2.3 (multi-day holds):
+day P&L = realised today + change in open mark-to-market since the PREVIOUS CLOSE
+  * each position's day reference ("day ref") is
+      - its entry price if it was opened on this London day, else
+      - its market's previous close in GBP (Position.prev_close, stamped by the
+        monitor at the first pass of the London day from the last mark taken
+        before midnight = the last 1m close of that market's previous session,
+        converted to GBP at the FX used for that mark);
+      - if a carried position has no prev_close for today, entry is used and
+        the source is reported as "entry_fallback_no_prev_close".
+  * open part   = sum qty x (mark - day ref)                 (all markets, GBP)
+  * realised part = SELLs booked on the London day, measured from the same day
+    ref (Trade.day_pnl, set at sell time); older rows without day_pnl use pnl.
+Positions opened today therefore still measure from entry, exactly as before.
 """
 
 from __future__ import annotations
@@ -34,18 +46,44 @@ def trade_day(ts) -> Optional[date]:
         return None
 
 
+def _trade_day_pnl(t) -> float:
+    v = getattr(t, "day_pnl", None)
+    return float(t.pnl) if v is None or v == "" else float(v)
+
+
 def realised_on(trades: Iterable, day: date) -> float:
-    return sum(float(t.pnl) for t in trades
+    """Realised P&L of SELLs booked on the London day, measured from each
+    position's day reference (previous close for carried positions)."""
+    return sum(_trade_day_pnl(t) for t in trades
                if t.action == "SELL" and trade_day(t.timestamp) == day)
 
 
 def open_mtm(positions: Iterable) -> float:
+    """Open mark-to-market vs ENTRY (since inception; not the day number)."""
     return sum(float(p.quantity) * (float(p.current_price) - float(p.avg_entry_price))
                for p in positions)
 
 
+def day_ref(pos, day: date) -> tuple[float, str]:
+    """(GBP reference price for today's P&L, source) for one open position."""
+    entry = float(pos.avg_entry_price)
+    opened = trade_day(getattr(pos, "opened_at", None) or None)
+    if opened is None or opened >= day:
+        return entry, "entry"
+    pc = getattr(pos, "prev_close", None)
+    if pc and float(pc) > 0 and getattr(pos, "prev_close_date", "") == day.isoformat():
+        return float(pc), getattr(pos, "prev_close_source", "") or "prev_close"
+    return entry, "entry_fallback_no_prev_close"
+
+
+def open_day_change(positions: Iterable, day: date) -> float:
+    """Change in open mark-to-market since the previous close (entry if opened today)."""
+    return sum(float(p.quantity) * (float(p.current_price) - day_ref(p, day)[0])
+               for p in positions)
+
+
 def day_pnl(trades: Iterable, positions: Iterable, day: date) -> float:
-    return realised_on(list(trades), day) + open_mtm(list(positions))
+    return realised_on(list(trades), day) + open_day_change(list(positions), day)
 
 
 def read_live_status(data_dir: str) -> dict:

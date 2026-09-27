@@ -84,7 +84,16 @@ All optional. Tool works with zero keys (yfinance + StockTwits + Reddit only).
   + `--replay DATE --position SYM:entry:stop:target:opened`
   (runs via /workspace/dash/start_monitor.sh; pidfile /workspace/dash/monitor.pid)
 - market_hours.py: `coverage(ticker)` pre-fill check (session data, market open, monitor heartbeat)
-- pnl.py: day P&L (London day, realised + open MTM, GBP) + GBP formatting for the dashboard/monitor
+- pnl.py: day P&L (SOP v2.3: London day, realised today + change in open MTM since the previous
+  close — entry for positions opened today; GBP) + GBP formatting for the dashboard/monitor.
+  monitor.stamp_prev_close() sets Position.prev_close on the first pass of each London day.
+- sizing.py: execution-time qty for Risk tickets (ticket qty = ceiling; effective risk/share =
+  stop distance x 1.6 + FX 0.78% (non-GBP) + purchase tax, in GBP; refuses price <= stop).
+  CLI: python sizing.py TSM --ticket-qty 1 --stop 429.5215 --entry 450.61 --price 451 --gbpusd 1.3253
+- Levels: execute_buy(levels_ccy="USD") keeps non-GBP stops/targets as prices in the line's currency;
+  default levels are GBP (GBX lines in POUNDS). Levels on the wrong side of the fill are refused.
+- Yahoo .L data is ~20 min delayed (Yahoo help SLN2310): a live LSE fill cannot pass the 60s
+  quote rule on a Yahoo quote; pass a fresh manual Quote (e.g. from the Freetrade order ticket).
 - alerts.py: data/alerts_log.jsonl event log
 - tests/: pytest suite (fixture: real ISPY.L 1m bars 2026-09-25)
 - broker_t212.py: Trading 212 REST client

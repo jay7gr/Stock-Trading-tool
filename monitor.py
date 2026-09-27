@@ -17,8 +17,11 @@ Each pass (live):
     (bar_checks: Low<=stop -> exit min(stop, Open); High>=target -> target;
     both in one bar -> stop), books SELLs via the emulator (data/trades.json,
     data/portfolio.json), stores last_check;
+  * first pass of each London day stamps every carried position's previous
+    close (SOP v2.3: prev_close = last mark taken before midnight, GBP);
   * recomputes ONE day P&L across all markets in GBP (realised on the London
-    day + open mark-to-market, pnl.py); at <= config.DAILY_STOP_LOSS (-£200)
+    day + change in open mark-to-market since the previous close, or since
+    entry for positions opened today; pnl.py); at <= config.DAILY_STOP_LOSS (-£200)
     sets halted and flattens every position whose market is open; positions
     on closed markets are queued (pending_flatten) and sold at their next open;
   * refreshes data/live_status.json (day_pnl, remaining_day_risk_gbp, halted,
@@ -106,18 +109,27 @@ def day_realised(emu, day: date) -> float:
     return pnl.realised_on(emu.trade_history, day)
 
 
-def _pos_rows(emu) -> list[dict]:
+def _pos_rows(emu, today: Optional[date] = None) -> list[dict]:
     rows = []
     for t, p in emu.positions.items():
         inst = instruments.lookup(t)
+        ref, ref_src = pnl.day_ref(p, today) if today else (p.avg_entry_price, "entry")
+        stop_gbp = emu.level_to_gbp(p, p.stop_loss)
+        tgt_gbp = emu.level_to_gbp(p, p.take_profit)
         rows.append({
             "ticker": t,
             "freetrade_ticker": inst.freetrade_ticker if inst else None,
             "isin": p.isin or (inst.isin if inst else None),
             "qty": p.quantity,
             "entry_gbp": p.avg_entry_price,
-            "stop_gbp": p.stop_loss,
-            "target_gbp": p.take_profit,
+            "stop_gbp": None if stop_gbp is None else round(stop_gbp, 4),
+            "target_gbp": None if tgt_gbp is None else round(tgt_gbp, 4),
+            "level_ccy": p.level_ccy or "GBP",
+            "stop_level": p.stop_loss,
+            "target_level": p.take_profit,
+            "day_ref_gbp": ref,
+            "day_ref_source": ref_src,
+            "day_change_gbp": round(p.quantity * (p.current_price - ref), 2),
             "mark_gbp": p.current_price,
             "value_gbp": round(p.quantity * p.current_price, 2),
             "unrealised_gbp": round(p.quantity * (p.current_price - p.avg_entry_price), 2),
@@ -133,9 +145,8 @@ def write_status(emu, data_dir: str, now: datetime, closed: list, action: str,
     ls_path = os.path.join(data_dir, "live_status.json")
     ls = _read_json(ls_path, {})
     today = now.date()
-    realised_today = day_realised(emu, today)
-    unreal = pnl.open_mtm(emu.positions.values())
-    day_pnl = round(realised_today + unreal, 2)
+    unreal = pnl.open_mtm(emu.positions.values())          # since entry (info)
+    day_pnl = round(pnl.day_pnl(emu.trade_history, emu.positions.values(), today), 2)  # SOP v2.3
     if halted is None:
         halted = bool(ls.get("halted")) and (ls.get("halted_date") or str(ls.get("as_of", ""))[:10]) == today.isoformat()
     ls.update({
@@ -143,12 +154,15 @@ def write_status(emu, data_dir: str, now: datetime, closed: list, action: str,
         "status_date": today.isoformat(),
         "mode": ls.get("mode", "paper_emulator"),
         "cash": round(emu.cash, 2),
-        "open_positions": _pos_rows(emu),
+        "open_positions": _pos_rows(emu, today),
         "day_pnl": day_pnl,
         "day_stop": config.DAILY_STOP_LOSS,
         "remaining_day_risk_gbp": round(max(0.0, day_pnl - config.DAILY_STOP_LOSS), 2),
-        "combined_stop_risk": round(sum(max(0.0, p.quantity * (p.avg_entry_price - p.stop_loss))
+        "combined_stop_risk": round(sum(max(0.0, p.quantity * (p.avg_entry_price - (emu.level_to_gbp(p, p.stop_loss) or 0.0)))
                                         for p in emu.positions.values()), 2),
+        # SOP v2.3 5b: open risk measured from today's reference (prev close) to each stop
+        "open_risk_from_day_ref_gbp": round(sum(max(0.0, p.quantity * (pnl.day_ref(p, today)[0] - (emu.level_to_gbp(p, p.stop_loss) or 0.0)))
+                                                for p in emu.positions.values()), 2),
         "halted": halted,
         "last_check": now.isoformat(),
     })
@@ -184,7 +198,7 @@ def write_status(emu, data_dir: str, now: datetime, closed: list, action: str,
         "unrealised_pnl": round(unreal, 2),
         "realised_pnl": round(sum(t.pnl for t in emu.trade_history if t.action == "SELL"), 2),
         "day_pnl": day_pnl,
-        "positions": _pos_rows(emu),
+        "positions": _pos_rows(emu, today),
     }
     _write_json(os.path.join(data_dir, "dashboard_snapshot.json"), snap)
     return ls
@@ -212,6 +226,43 @@ def rollover_if_new_day(data_dir: str, now: datetime) -> bool:
     _write_json(ls_path, ls)
     print(f"[monitor] new-day rollover {status_date} -> {today}", flush=True)
     return True
+
+
+def stamp_prev_close(data_dir: str, now: datetime) -> list[str]:
+    """SOP v2.3: on the London day's first pass, record each carried position's
+    previous close (GBP) as its day reference.
+
+    The reference is the last mark taken before London midnight — the monitor's
+    final post-close check sets that mark from the last completed 1m bar of the
+    market's previous session (converted to GBP at the FX used for that mark).
+    Positions opened today are skipped (they measure from entry). If the mark
+    is missing or not from before midnight, nothing is stamped and pnl.day_ref
+    falls back to entry with source "entry_fallback_no_prev_close".
+    Returns the tickers stamped."""
+    path = os.path.join(data_dir, "portfolio.json")
+    port = _read_json(path, None)
+    if not port or not port.get("positions"):
+        return []
+    today = now.date()
+    midnight = datetime(today.year, today.month, today.day, tzinfo=quotes.LONDON)
+    stamped = []
+    for tkr, p in port["positions"].items():
+        opened = pnl.trade_day(p.get("opened_at") or None)
+        if opened is None or opened >= today or p.get("prev_close_date") == today.isoformat():
+            continue
+        lc = to_london(p["last_check"]) if p.get("last_check") else None
+        mark = p.get("current_price")
+        if lc is None or lc > midnight or not mark:
+            continue
+        p["prev_close"] = float(mark)
+        p["prev_close_date"] = today.isoformat()
+        p["prev_close_source"] = f"last_mark_before_midnight(last_bar_end={lc.isoformat()})"
+        stamped.append(tkr)
+    if stamped:
+        _write_json(path, port)
+        print(f"[monitor] prev_close stamped for {today}: "
+              f"{ {t: port['positions'][t]['prev_close'] for t in stamped} }", flush=True)
+    return stamped
 
 
 # ─── one live pass ───────────────────────────────────────────────────
@@ -256,6 +307,7 @@ def run_once(data_dir: Optional[str] = None, now: Optional[datetime] = None,
         return {"action": "skipped_locked"}
     try:
         rolled = rollover_if_new_day(data_dir, now)
+        stamp_prev_close(data_dir, now)
         port = _read_json(os.path.join(data_dir, "portfolio.json"), {})
         positions = port.get("positions") or {}
         if not positions:

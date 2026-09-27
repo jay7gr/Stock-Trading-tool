@@ -14,6 +14,13 @@ Post-2026-09-25 safeguards:
     ticket's ISIN, listing and currency (InstrumentMismatchError otherwise).
   * Risk SOP v2.2: fills need exchange session data, an open market and a
     live stop/target monitor heartbeat (MarketNotCoveredError otherwise).
+  * 2026-09-27: stop/target sanity guard at fill (InvalidLevelsError: a long
+    stop must be below the fill and the target above it, in the same unit —
+    catches pence-vs-pounds and USD-vs-GBP level mistakes); optional
+    `levels_ccy` so non-GBP tickets keep their stop/target as a price level in
+    the line's own currency (e.g. TSM stop 429.5215 USD) instead of a GBP
+    number that drifts with FX; SOP v2.3 day P&L from the previous close
+    (Position.prev_close, Trade.day_pnl; see pnl.py).
 """
 
 import json
@@ -33,6 +40,11 @@ import quotes
 from quotes import Quote, StaleQuoteError, now_london, to_london
 from bar_checks import check_position, floor_minute
 from alerts import append_alert
+import pnl as pnl_mod
+
+
+class InvalidLevelsError(ValueError):
+    """Stop/target inconsistent with the fill price (wrong unit or wrong side)."""
 
 
 def _to_book_gbp(ticker: str, raw_price: float, reference_gbp: float | None = None) -> float:
@@ -90,6 +102,10 @@ class Trade:
     quote_source: str = ""    # e.g. yfinance_chart_regularMarketTime, yfinance_1m_bar
     isin: str = ""
     ticket_symbol: str = ""
+    # SOP v2.3: SELL P&L measured from the position's day ref (previous close if
+    # carried overnight, else entry). None on older rows -> pnl is used.
+    day_pnl: Optional[float] = None
+    level_ccy: str = ""       # "" = stop/target in GBP book units; else e.g. "USD"
 
 
 @dataclass
@@ -107,6 +123,15 @@ class Position:
     last_check: str = ""      # end of the last 1m bar checked for stop/target
     isin: str = ""
     ticket_symbol: str = ""
+    # SOP v2.3 multi-day day P&L: previous close in GBP book units, and the
+    # London date it is the reference for (stamped by the monitor each day).
+    prev_close: float = 0.0
+    prev_close_date: str = ""
+    prev_close_source: str = ""
+    # "" (legacy) = stop_loss/take_profit in GBP book units; otherwise the
+    # trading currency (e.g. "USD") and the levels are prices in that currency.
+    level_ccy: str = ""
+    fx_ref: float = 0.0       # last GBP{ccy} rate used for this position (for GBP risk displays)
 
 
 _TRADE_FIELDS = {f.name for f in fields(Trade)}
@@ -167,6 +192,42 @@ class PaperTradingEmulator:
     def _gbpusd(self) -> float:
         return self._fx("USD")
 
+    @staticmethod
+    def native_levels(pos) -> bool:
+        return bool(getattr(pos, "level_ccy", "")) and pos.level_ccy != "GBP"
+
+    def level_to_gbp(self, pos, level: float) -> Optional[float]:
+        """A stop/target level -> GBP book units (uses pos.fx_ref for native levels)."""
+        if level is None or not self.native_levels(pos):
+            return level
+        fx = getattr(pos, "fx_ref", 0.0) or None
+        if not fx:
+            try:
+                fx = self._fx(pos.level_ccy)
+            except Exception:  # noqa: BLE001
+                return None
+        return level / fx
+
+    @staticmethod
+    def validate_levels(fill_price: float, stop_loss: float, take_profit: float,
+                        unit: str = "GBP") -> None:
+        """Long-only: 0 < stop < fill < target (target optional: 0/None = none).
+        All three in the same unit. A stop at/above the fill would stop out on the
+        first bar - the classic symptom of pence-vs-pounds or USD-vs-GBP levels."""
+        if not fill_price or fill_price <= 0:
+            raise InvalidLevelsError(f"bad fill price {fill_price}")
+        if stop_loss is None or stop_loss <= 0 or stop_loss >= fill_price:
+            raise InvalidLevelsError(
+                f"stop {stop_loss} must be > 0 and below the fill {fill_price:.4f} ({unit}); "
+                f"check the unit (GBX pence vs GBP pounds, USD vs GBP)")
+        if take_profit and take_profit <= fill_price:
+            raise InvalidLevelsError(
+                f"target {take_profit} must be above the fill {fill_price:.4f} ({unit})")
+        if take_profit and take_profit > fill_price * 20:
+            raise InvalidLevelsError(
+                f"target {take_profit} is >20x the fill {fill_price:.4f} ({unit}); "
+                f"looks like pence passed as pounds")
+
     def _book_price(self, ticker: str, raw: float, reference_gbp: Optional[float] = None) -> float:
         """Vendor quote -> GBP book price. Registry first (knows GBX vs GBP vs USD);
         unregistered tickers fall back to the _to_book_gbp heuristic."""
@@ -203,13 +264,20 @@ class PaperTradingEmulator:
                     quote: Optional[Quote] = None,
                     ticket_isin: Optional[str] = None,
                     ticket_listing: Optional[str] = None,
-                    ticket_currency: Optional[str] = None) -> Optional[Trade]:
+                    ticket_currency: Optional[str] = None,
+                    levels_ccy: Optional[str] = None) -> Optional[Trade]:
         """Execute a paper buy order.
 
         `ticket_symbol` is what the ticket/plan named (defaults to `ticker`);
         the fill instrument must match it in the registry. The fill price is
         taken from a quote no older than 60s (re-quoted if needed); `price`
         is the caller's reference price only.
+
+        Levels: by default stop_loss/take_profit are GBP book prices (GBX lines
+        in POUNDS, USD lines converted to GBP). Pass levels_ccy=<trading
+        currency> (e.g. "USD") to give them in the line's own currency; they are
+        then kept as a price level in that currency. Levels on the wrong side of
+        the fill raise InvalidLevelsError (nothing is booked).
         """
         now = to_london(self.now_fn())
         ticket_symbol = ticket_symbol or ticker
@@ -226,6 +294,11 @@ class PaperTradingEmulator:
         except MarketNotCoveredError as e:
             self._alert("skip", ticker, {"reason": "market_not_covered", "error": str(e)})
             raise
+        lvl_ccy = (levels_ccy or "GBP").upper()
+        if lvl_ccy not in ("GBP", inst.currency):
+            raise InvalidLevelsError(f"levels_ccy {levels_ccy} is neither GBP nor {inst.symbol}'s "
+                                     f"trading currency {inst.currency}")
+        native = lvl_ccy != "GBP" and inst.currency != "GBP"
         if quote is not None and quote.symbol.upper() != inst.yf_symbol.upper():
             err = InstrumentMismatchError(
                 f"quote symbol {quote.symbol} is not {inst.yf_symbol} ({inst.isin})")
@@ -248,6 +321,17 @@ class PaperTradingEmulator:
                                          "ref_price": price})
             raise
         fill_price = self._book_price(inst.yf_symbol, q.price)
+        fx_ref = self._fx(inst.currency) if inst.currency != "GBP" else 0.0
+        try:
+            if native:
+                self.validate_levels(inst.to_major(q.price), stop_loss, take_profit, inst.currency)
+            else:
+                self.validate_levels(fill_price, stop_loss, take_profit, "GBP")
+        except InvalidLevelsError as e:
+            self._alert("skip", ticker, {"reason": "invalid_levels", "error": str(e),
+                                         "stop": stop_loss, "target": take_profit,
+                                         "fill_gbp": fill_price, "levels_ccy": lvl_ccy})
+            raise
         note = ""
         if price and fill_price and abs(fill_price / price - 1) > 0.005:
             note = (f" [fill {fill_price:.4f} from fresh quote vs ref {price:.4f} "
@@ -269,6 +353,7 @@ class PaperTradingEmulator:
             stop_loss=stop_loss, take_profit=take_profit,
             quote_ts=to_london(q.ts).isoformat(), quote_source=q.source,
             isin=inst.isin, ticket_symbol=inst.symbol,
+            level_ccy=inst.currency if native else "",
         )
 
         # Update or create position
@@ -278,9 +363,16 @@ class PaperTradingEmulator:
             pos.avg_entry_price = (
                 (pos.avg_entry_price * pos.quantity + fill_price * quantity) / total_qty
             )
+            ref, src = pnl_mod.day_ref(pos, now.date())
+            if src != "entry" and src != "entry_fallback_no_prev_close":
+                # carried position topped up today: blend the day ref (prev close
+                # for the old shares, today's fill for the new ones)
+                pos.prev_close = (ref * pos.quantity + fill_price * quantity) / total_qty
             pos.quantity = total_qty
             pos.stop_loss = stop_loss
             pos.take_profit = take_profit
+            pos.level_ccy = inst.currency if native else ""
+            pos.fx_ref = fx_ref
         else:
             self.positions[key] = Position(
                 ticker=key, quantity=quantity,
@@ -289,6 +381,7 @@ class PaperTradingEmulator:
                 stop_loss=stop_loss, take_profit=take_profit,
                 opened_at=now.isoformat(), last_check="",
                 isin=inst.isin, ticket_symbol=inst.symbol,
+                level_ccy=inst.currency if native else "", fx_ref=fx_ref,
             )
 
         self.trade_history.append(trade)
@@ -333,6 +426,8 @@ class PaperTradingEmulator:
 
         sell_value = pos.quantity * fill_price
         pnl = sell_value - (pos.quantity * pos.avg_entry_price)
+        ref, _src = pnl_mod.day_ref(pos, fill_ts.date())
+        day_pnl = pos.quantity * (fill_price - ref)
 
         self.cash += sell_value
         self.trade_counter += 1
@@ -350,6 +445,7 @@ class PaperTradingEmulator:
             pnl=pnl,
             quote_ts=quote_ts.isoformat(), quote_source=quote_source or "",
             isin=pos.isin, ticket_symbol=pos.ticket_symbol,
+            day_pnl=day_pnl,
         )
 
         # Mark the open BUY leg(s) as closed so history reads consistently.
@@ -385,15 +481,27 @@ class PaperTradingEmulator:
             since = floor_minute(to_london(pos.opened_at)) if pos.opened_at else now
             if pos.last_check and to_london(pos.last_check) > since:
                 since = to_london(pos.last_check)
+            native = self.native_levels(pos) and inst is not None
             try:
                 # 10 min of lookback gives the bad-tick guard a previous close
                 bars = self.bars_fn(yf_sym, since - timedelta(minutes=10), now)
+                if native:
+                    # levels are prices in the trading currency: compare in that unit
+                    to_lvl = inst.to_major
+                else:
+                    to_lvl = lambda x, _t=yf_sym, _r=pos.avg_entry_price: self._book_price(_t, x, _r)
                 res = check_position(
                     bars, stop=pos.stop_loss, target=pos.take_profit,
                     opened_at=pos.opened_at or now, last_check=pos.last_check or None,
-                    now=now,
-                    to_book=lambda x, _t=yf_sym, _r=pos.avg_entry_price: self._book_price(_t, x, _r),
+                    now=now, to_book=to_lvl,
                 )
+                if native and (res.exit or res.last_close is not None):
+                    fx = self._fx(inst.currency)
+                    pos.fx_ref = fx
+                    if res.last_close is not None:
+                        res.last_close = res.last_close / fx          # mark -> GBP
+                    if res.exit:
+                        res.exit.gbp_price = res.exit.price / fx       # exit -> GBP for the book
             except Exception as e:  # noqa: BLE001
                 print(f"[Emulator] bar check failed for {ticker}: {e}")
                 continue
@@ -417,23 +525,28 @@ class PaperTradingEmulator:
         for ticker, res in exits:
             ex = res.exit
             pos = self.positions[ticker]
+            unit = f" {pos.level_ccy}" if self.native_levels(pos) else ""
+            book_px = getattr(ex, "gbp_price", None) or ex.price
             if ex.kind == "stop":
                 status = "stopped_out"
-                reason = (f"stopped_out: 1m bar {ex.bar_ts:%Y-%m-%d %H:%M} Low {ex.bar_low:.4f} "
-                          f"<= stop {ex.level:.4f}; exit {ex.price:.4f}"
+                reason = (f"stopped_out: 1m bar {ex.bar_ts:%Y-%m-%d %H:%M} Low {ex.bar_low:.4f}{unit} "
+                          f"<= stop {ex.level:.4f}{unit}; exit {ex.price:.4f}{unit}"
                           + (" (gapped: filled at bar Open)" if ex.gapped else " (at stop)"))
             else:
                 status = "take_profit_hit"
-                reason = (f"take_profit_hit: 1m bar {ex.bar_ts:%Y-%m-%d %H:%M} High {ex.bar_high:.4f} "
-                          f">= target {ex.level:.4f}; exit at target")
+                reason = (f"take_profit_hit: 1m bar {ex.bar_ts:%Y-%m-%d %H:%M} High {ex.bar_high:.4f}{unit} "
+                          f">= target {ex.level:.4f}{unit}; exit at target")
+            if unit:
+                reason += f" = £{book_px:.4f} @ GBP{pos.level_ccy} {pos.fx_ref:.4f}"
             entry = pos.avg_entry_price
-            trade = self.execute_sell(ticker, reason, fill_price=ex.price, fill_ts=ex.bar_ts,
+            trade = self.execute_sell(ticker, reason, fill_price=book_px, fill_ts=ex.bar_ts,
                                       quote_ts=ex.bar_ts, quote_source="yfinance_1m_bar",
                                       status=status)
             if trade:
                 closed_trades.append(trade)
                 self._alert(ex.kind, ticker,
-                            {"trade_id": trade.id, "entry": entry, "exit": ex.price,
+                            {"trade_id": trade.id, "entry": entry, "exit": book_px,
+                             "level_ccy": pos.level_ccy or "GBP",
                              "level": ex.level, "gapped": ex.gapped, "pnl": trade.pnl,
                              "bar": ex.to_dict()},
                             event_ts=ex.bar_ts, detected_ts=now)
@@ -520,6 +633,9 @@ class PaperTradingEmulator:
                     "opened_at": p.opened_at,
                     "last_check": p.last_check,
                     "isin": p.isin, "ticket_symbol": p.ticket_symbol,
+                    "prev_close": p.prev_close, "prev_close_date": p.prev_close_date,
+                    "prev_close_source": p.prev_close_source,
+                    "level_ccy": p.level_ccy, "fx_ref": p.fx_ref,
                 }
                 for t, p in self.positions.items()
             },
@@ -549,6 +665,11 @@ class PaperTradingEmulator:
                         last_check=p.get("last_check", ""),
                         isin=p.get("isin", ""),
                         ticket_symbol=p.get("ticket_symbol", ""),
+                        prev_close=p.get("prev_close", 0.0) or 0.0,
+                        prev_close_date=p.get("prev_close_date", "") or "",
+                        prev_close_source=p.get("prev_close_source", "") or "",
+                        level_ccy=p.get("level_ccy", "") or "",
+                        fx_ref=p.get("fx_ref", 0.0) or 0.0,
                     )
             except (json.JSONDecodeError, KeyError):
                 pass

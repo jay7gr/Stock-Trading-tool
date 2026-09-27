@@ -213,3 +213,7 @@ EMULATOR_MODE = True                 # Set False when connected to Trading 212
 
 # ─── Fill safeguards (post 2026-09-25 postmortem) ────────────────────
 MAX_QUOTE_AGE_S = 60                 # every fill needs a quote <= 60s old (re-quote once, else reject)
+# Vendor (Yahoo) feed delay per exchange, minutes. Yahoo help SLN2310: London Stock Exchange .L = 20 min.
+# Stop/target checks treat bars as complete only once start + 1m <= now - delay (a delayed feed's
+# latest bar is still forming), and the monitor's check schedule for that exchange is shifted by it.
+FEED_DELAY_MIN = {"LSE": 20}

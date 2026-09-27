@@ -86,7 +86,7 @@ def test_monitor_stamps_prev_close_and_sell_books_day_pnl_from_it(tmp_path):
     # Tue 08:01 bar gaps through the £108 stop at £107.80 -> exit at the open
     bars = pd.DataFrame([[107.8, 107.9, 107.7, 107.85]], columns=["Open", "High", "Low", "Close"],
                         index=pd.DatetimeIndex([pd.Timestamp("2026-09-29 08:01", tz=LONDON)]))
-    r = monitor.run_once(str(tmp_path), now=L(29, 8, 2, 5),
+    r = monitor.run_once(str(tmp_path), now=L(29, 8, 22, 5),          # 08:01 .L bar visible ~20 min later
                          bars_fn=lambda s, a, b: bars[(bars.index >= a) & (bars.index <= b)])
     sell = json.loads((tmp_path / "trades.json").read_text())[-1]
     assert sell["price"] == pytest.approx(107.8)
@@ -107,7 +107,7 @@ def test_halt_uses_day_change_not_since_entry(tmp_path):
     mk = lambda c: pd.DataFrame([[c, c, c, c]], columns=["Open", "High", "Low", "Close"],
                                 index=pd.DatetimeIndex([pd.Timestamp("2026-09-29 09:00", tz=LONDON)]))
     b1 = mk(110.0)
-    r = monitor.run_once(str(tmp_path), now=L(29, 9, 1, 5),
+    r = monitor.run_once(str(tmp_path), now=L(29, 9, 21, 5),
                          bars_fn=lambda s, a, b: b1[(b1.index >= a) & (b1.index <= b)])
     assert r["day_pnl"] == pytest.approx(-50.0) and r["action"] != "halt_flatten_all"
     ls = json.loads((tmp_path / "live_status.json").read_text())
@@ -115,8 +115,8 @@ def test_halt_uses_day_change_not_since_entry(tmp_path):
     assert row["day_ref_gbp"] == 110.5 and row["day_change_gbp"] == pytest.approx(-50.0)
     b2 = pd.DataFrame([[108.4, 108.4, 108.4, 108.4]], columns=["Open", "High", "Low", "Close"],
                       index=pd.DatetimeIndex([pd.Timestamp("2026-09-29 09:01", tz=LONDON)]))
-    q = {"VUSA.L": Quote("VUSA.L", 108.4, L(29, 9, 2, 0), "t")}
-    r = monitor.run_once(str(tmp_path), now=L(29, 9, 2, 5),
+    q = {"VUSA.L": Quote("VUSA.L", 108.4, L(29, 9, 22, 0), "t")}
+    r = monitor.run_once(str(tmp_path), now=L(29, 9, 22, 5),
                          bars_fn=lambda s, a, b: b2[(b2.index >= a) & (b2.index <= b)], quote_fn=q.get)
     assert r["action"] == "halt_flatten_all" and r["day_pnl"] == pytest.approx(-210.0)
 

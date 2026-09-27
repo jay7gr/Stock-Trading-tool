@@ -92,8 +92,27 @@ All optional. Tool works with zero keys (yfinance + StockTwits + Reddit only).
   CLI: python sizing.py TSM --ticket-qty 1 --stop 429.5215 --entry 450.61 --price 451 --gbpusd 1.3253
 - Levels: execute_buy(levels_ccy="USD") keeps non-GBP stops/targets as prices in the line's currency;
   default levels are GBP (GBX lines in POUNDS). Levels on the wrong side of the fill are refused.
-- Yahoo .L data is ~20 min delayed (Yahoo help SLN2310): a live LSE fill cannot pass the 60s
-  quote rule on a Yahoo quote; pass a fresh manual Quote (e.g. from the Freetrade order ticket).
+- Yahoo .L data is ~20 min delayed (Yahoo help SLN2310; config.FEED_DELAY_MIN = {"LSE": 20}).
+  Decision (27 Sep): NO prices from the Freetrade app. LSE paper legs are filled with lse_leg.py:
+    python lse_leg.py VUSA --at 08:06 --ticket-qty 13 --stop 108.1686 --entry 110.4325 --target 114.9603 \
+        --pending TSM:1:429.5215:450.61 --pending WMT:7:103.704:107.98 --pending MSFT:1:492.6326:516.17 \
+        --gbpusd 1.325346 [--dry-run]
+  Run it once the decision-minute bar is visible (~20-45 min later). Fill = that 1m bar's OPEN,
+  fill time = quote_ts = bar start, quote_source "yahoo_1m_bar_open_delayed", booked_at = wall clock.
+  No look-ahead (later bars discarded). Refused: no bar at that minute, bar open <= stop, as_of in
+  the future / > 45 min old / outside the session, non-GBP line, stale heartbeat or LSE closed at
+  the wall clock. --dry-run writes nothing (temp copy); --now (dry-run only) simulates the clock.
+  emulator.execute_buy(as_of=..., quote=..., qty=...) is the underlying API (freshness vs as_of).
+- Delayed-feed stop checks: bars count as complete only when start + 1m <= now - delay, and the
+  monitor's LSE check window is shifted by the delay (checks ~08:20-16:55, final 16:55-17:05).
+  Exits are booked at the true breach bar (stop price, or bar open if gapped), never at alert time.
+- Package sizing (Risk ruling 27 Sep): sizing.package_qty / `python sizing.py package ...`.
+  Ticket qty = ceiling; a leg fills while realised loss today + full effective risk of every open
+  leg (day ref -> stop) + filling legs <= £200; cuts in whole shares from the lowest rank up
+  (MSFT, WMT, SHEL, VUSA, TSM). US legs (real-time quotes) book with:
+    python sizing.py package --leg TSM:1:429.5215:492.787 --leg WMT:7:103.704:116.532 \
+        --leg MSFT:1:492.6326:563.2448 --book [--dry-run]
+  lse_leg.py runs the same package check (with --pending legs reserved by rank).
 - alerts.py: data/alerts_log.jsonl event log
 - tests/: pytest suite (fixture: real ISPY.L 1m bars 2026-09-25)
 - broker_t212.py: Trading 212 REST client

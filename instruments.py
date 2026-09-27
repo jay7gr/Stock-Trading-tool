@@ -176,6 +176,12 @@ def require_session(inst: "Instrument") -> Exchange:
     return exchange_of(inst)
 
 
+def feed_delay(inst: "Instrument") -> timedelta:
+    """Vendor feed delay for the instrument's exchange (config.FEED_DELAY_MIN; LSE on Yahoo = 20 min)."""
+    import config
+    return timedelta(minutes=float(getattr(config, "FEED_DELAY_MIN", {}).get(inst.exchange, 0)))
+
+
 @dataclass(frozen=True)
 class Instrument:
     symbol: str            # ticket symbol (what plans/tickets name)

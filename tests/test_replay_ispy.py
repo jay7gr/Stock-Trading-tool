@@ -75,14 +75,16 @@ def test_monitor_minute_loop_books_stop(tmp_path, ispy_bars):
     qty = 12000 / 37.75
     _seed_position(tmp_path, qty, 37.75, 37.3725, 38.6937, "2026-09-25T08:22:21")
     fired = None
-    t = datetime(2026, 9, 25, 8, 23, 5, tzinfo=LONDON)
-    while t.hour < 10:
+    # Yahoo .L is 20 min delayed (config.FEED_DELAY_MIN): the wall clock runs 20 min
+    # behind the bars; the stop is still booked at the true breach bar (09:10).
+    t = datetime(2026, 9, 25, 8, 43, 5, tzinfo=LONDON)
+    while t.hour < 11:
         res = monitor.run_once(str(tmp_path), now=t, bars_fn=_bars_fn(ispy_bars))
         if res.get("closed"):
             fired = t
             break
         t = t.replace(minute=(t.minute + 1) % 60, hour=t.hour + (1 if t.minute == 59 else 0))
-    assert fired is not None and fired <= datetime(2026, 9, 25, 9, 15, tzinfo=LONDON)
+    assert fired is not None and fired <= datetime(2026, 9, 25, 9, 35, tzinfo=LONDON)
     trades = json.loads((tmp_path / "trades.json").read_text())
     sell = trades[-1]
     assert sell["action"] == "SELL" and sell["price"] == pytest.approx(37.28)
@@ -116,8 +118,8 @@ def test_monitor_halt_at_minus_200_flattens_all(tmp_path, ispy_bars):
     def bars_fn(sym, since, now):
         src = ispy_bars if sym == "ISPY.L" else iesu
         return src[(src.index >= since) & (src.index <= now)]
-    now = datetime(2026, 9, 25, 9, 11, 5, tzinfo=LONDON)
-    quote_fn = lambda s: Quote("IESU.L", 1002.0, datetime(2026, 9, 25, 9, 11, 0, tzinfo=LONDON), "test")
+    now = datetime(2026, 9, 25, 9, 31, 5, tzinfo=LONDON)     # 09:10 bar visible after the 20-min delay
+    quote_fn = lambda s: Quote("IESU.L", 1002.0, datetime(2026, 9, 25, 9, 31, 0, tzinfo=LONDON), "test")
     res = monitor.run_once(str(tmp_path), now=now, bars_fn=bars_fn, quote_fn=quote_fn)
     assert res["action"] == "halt_flatten_all"
     assert res["day_pnl"] == pytest.approx(-700 * 0.47 + 100 * 0.02, abs=0.01)
@@ -128,7 +130,7 @@ def test_monitor_halt_at_minus_200_flattens_all(tmp_path, ispy_bars):
     assert alerts.count("stop") == 1 and "exit" in alerts and "halt" in alerts
     trades = json.loads((tmp_path / "trades.json").read_text())
     iesu_sell = [t for t in trades if t["ticker"] == "IESU.L" and t["action"] == "SELL"][0]
-    assert iesu_sell["price"] == pytest.approx(10.02) and iesu_sell["quote_ts"].startswith("2026-09-25T09:11:00")
+    assert iesu_sell["price"] == pytest.approx(10.02) and iesu_sell["quote_ts"].startswith("2026-09-25T09:31:00")
 
 
 def test_monitor_flat_is_idle(tmp_path, monkeypatch):

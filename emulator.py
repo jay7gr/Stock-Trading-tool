@@ -47,6 +47,13 @@ class InvalidLevelsError(ValueError):
     """Stop/target inconsistent with the fill price (wrong unit or wrong side)."""
 
 
+class AsOfError(ValueError):
+    """Explicit fill time (as_of) refused: in the future, too old, or outside the session."""
+
+
+MAX_AS_OF_AGE_S = 45 * 60   # delayed-bar fills: as_of at most 45 min before the wall clock
+
+
 def _to_book_gbp(ticker: str, raw_price: float, reference_gbp: float | None = None) -> float:
     """Normalise vendor quotes into GBP for the paper book.
 
@@ -106,6 +113,7 @@ class Trade:
     # carried overnight, else entry). None on older rows -> pnl is used.
     day_pnl: Optional[float] = None
     level_ccy: str = ""       # "" = stop/target in GBP book units; else e.g. "USD"
+    booked_at: str = ""       # wall-clock time the fill was booked (differs from timestamp for delayed-bar fills)
 
 
 @dataclass
@@ -209,6 +217,21 @@ class PaperTradingEmulator:
         return level / fx
 
     @staticmethod
+    def validate_as_of(inst, as_of: datetime, now: datetime,
+                       max_age_s: float = MAX_AS_OF_AGE_S) -> None:
+        """as_of must be <= now, at most max_age_s old, and inside the market session."""
+        as_of, now = to_london(as_of), to_london(now)
+        if as_of > now:
+            raise AsOfError(f"as_of {as_of.isoformat()} is in the future (now {now.isoformat()})")
+        age = (now - as_of).total_seconds()
+        if age > max_age_s:
+            raise AsOfError(f"as_of {as_of.isoformat()} is {age / 60:.1f} min old "
+                            f"(max {max_age_s / 60:.0f} min)")
+        ex = instruments.exchange_of(inst)
+        if not ex.is_open(as_of):
+            raise AsOfError(f"as_of {as_of.isoformat()} is outside the {ex.code} session")
+
+    @staticmethod
     def validate_levels(fill_price: float, stop_loss: float, take_profit: float,
                         unit: str = "GBP") -> None:
         """Long-only: 0 < stop < fill < target (target optional: 0/None = none).
@@ -265,7 +288,9 @@ class PaperTradingEmulator:
                     ticket_isin: Optional[str] = None,
                     ticket_listing: Optional[str] = None,
                     ticket_currency: Optional[str] = None,
-                    levels_ccy: Optional[str] = None) -> Optional[Trade]:
+                    levels_ccy: Optional[str] = None,
+                    as_of: Optional[datetime] = None,
+                    qty: Optional[float] = None) -> Optional[Trade]:
         """Execute a paper buy order.
 
         `ticket_symbol` is what the ticket/plan named (defaults to `ticker`);
@@ -278,8 +303,18 @@ class PaperTradingEmulator:
         currency> (e.g. "USD") to give them in the line's own currency; they are
         then kept as a price level in that currency. Levels on the wrong side of
         the fill raise InvalidLevelsError (nothing is booked).
+
+        Delayed-bar fills (as_of): the fill is booked AT `as_of` (e.g. the start
+        of a Yahoo 1m bar that only became visible ~20 min later). Requires an
+        explicit `quote`; the 60s freshness rule compares quote.ts to as_of
+        (a quote timestamped after as_of is look-ahead and refused); no live
+        re-quote. as_of must be <= wall clock, no more than 45 min old, and
+        inside the instrument's market session. Monitor heartbeat / coverage and
+        the day-halt check still use the real wall clock. `qty` (optional) books
+        exactly that many shares (size_gbp is then qty x fill price).
         """
-        now = to_london(self.now_fn())
+        now = to_london(self.now_fn())          # wall clock
+        fill_ts = now if as_of is None else to_london(as_of)
         ticket_symbol = ticket_symbol or ticker
         try:
             inst = instruments.assert_fill_matches_ticket(
@@ -288,6 +323,15 @@ class PaperTradingEmulator:
             self._alert("skip", ticker, {"reason": "instrument_check_failed",
                                          "ticket": ticket_symbol, "error": str(e)})
             raise
+        if as_of is not None:
+            try:
+                self.validate_as_of(inst, fill_ts, now)
+                if quote is None:
+                    raise AsOfError("an explicit quote (the bar at as_of) is required with as_of")
+            except AsOfError as e:
+                self._alert("skip", ticker, {"reason": "as_of_refused", "error": str(e),
+                                             "as_of": fill_ts.isoformat()}, detected_ts=now)
+                raise
         # Risk SOP v2.2: market must be open and its hours covered by the live monitor.
         try:
             market_hours.require_fill_coverage(inst.symbol, at=now, data_dir=self.data_dir)
@@ -308,14 +352,24 @@ class PaperTradingEmulator:
             self._alert("skip", ticker, {"reason": "day_halted", "ticket": ticket_symbol})
             return None
 
-        if size_gbp > self.cash:
-            size_gbp = self.cash  # Use available cash
-        if size_gbp < config.MIN_POSITION_SIZE:
-            return None
+        if qty is None:
+            if size_gbp > self.cash:
+                size_gbp = self.cash  # Use available cash
+            if size_gbp < config.MIN_POSITION_SIZE:
+                return None
 
         try:
-            q = quotes.get_fresh_quote(inst.yf_symbol, at=now, fetch=self.quote_fn,
-                                       existing=quote, requote_wait_s=self.requote_wait_s)
+            if as_of is not None:
+                age = (fill_ts - to_london(quote.ts)).total_seconds()
+                if age < 0 or age > quotes.MAX_QUOTE_AGE_S:
+                    raise StaleQuoteError(
+                        f"{inst.yf_symbol}: quote ts {to_london(quote.ts).isoformat()} is {age:.0f}s "
+                        f"{'after' if age < 0 else 'before'} the fill time {fill_ts.isoformat()}; "
+                        f"must be 0..{quotes.MAX_QUOTE_AGE_S:.0f}s before it")
+                q = quote
+            else:
+                q = quotes.get_fresh_quote(inst.yf_symbol, at=now, fetch=self.quote_fn,
+                                           existing=quote, requote_wait_s=self.requote_wait_s)
         except StaleQuoteError as e:
             self._alert("skip", ticker, {"reason": "stale_quote", "error": str(e),
                                          "ref_price": price})
@@ -338,7 +392,17 @@ class PaperTradingEmulator:
                     f"({(fill_price / price - 1) * 100:+.2f}%)]")
 
         key = inst.yf_symbol
-        quantity = size_gbp / fill_price
+        if qty is not None:
+            quantity = float(qty)
+            size_gbp = quantity * fill_price
+            if quantity <= 0:
+                return None
+            if size_gbp > self.cash + 1e-9:
+                self._alert("skip", ticker, {"reason": "insufficient_cash", "needed": size_gbp,
+                                             "cash": self.cash})
+                return None
+        else:
+            quantity = size_gbp / fill_price
         self.cash -= size_gbp
         self.trade_counter += 1
 
@@ -346,7 +410,7 @@ class PaperTradingEmulator:
             id=f"T{self.trade_counter:05d}",
             ticker=key, action="BUY",
             quantity=quantity, price=fill_price, value_gbp=size_gbp,
-            timestamp=now.isoformat(),
+            timestamp=fill_ts.isoformat(),
             reasoning=reasoning + note,
             claude_score=claude_score, grok_score=grok_score,
             combined_score=combined_score,
@@ -354,6 +418,7 @@ class PaperTradingEmulator:
             quote_ts=to_london(q.ts).isoformat(), quote_source=q.source,
             isin=inst.isin, ticket_symbol=inst.symbol,
             level_ccy=inst.currency if native else "",
+            booked_at=now.isoformat(),
         )
 
         # Update or create position
@@ -379,7 +444,7 @@ class PaperTradingEmulator:
                 avg_entry_price=fill_price, current_price=fill_price,
                 value_gbp=size_gbp, unrealised_pnl=0, unrealised_pnl_pct=0,
                 stop_loss=stop_loss, take_profit=take_profit,
-                opened_at=now.isoformat(), last_check="",
+                opened_at=fill_ts.isoformat(), last_check="",
                 isin=inst.isin, ticket_symbol=inst.symbol,
                 level_ccy=inst.currency if native else "", fx_ref=fx_ref,
             )
@@ -390,8 +455,8 @@ class PaperTradingEmulator:
                                   "qty": quantity, "value_gbp": size_gbp,
                                   "stop": stop_loss, "target": take_profit,
                                   "quote_ts": trade.quote_ts, "quote_source": q.source,
-                                  "isin": inst.isin},
-                    event_ts=now, detected_ts=now)
+                                  "isin": inst.isin, "booked_at": now.isoformat()},
+                    event_ts=fill_ts, detected_ts=now)
         return trade
 
     def execute_sell(self, ticker: str, reason: str = "signal",
@@ -490,10 +555,13 @@ class PaperTradingEmulator:
                     to_lvl = inst.to_major
                 else:
                     to_lvl = lambda x, _t=yf_sym, _r=pos.avg_entry_price: self._book_price(_t, x, _r)
+                # delayed feed (Yahoo .L ~20 min): the latest visible bar is still forming,
+                # so only bars with start + 1m <= now - delay count as complete
+                delay = instruments.feed_delay(inst) if inst is not None else timedelta(0)
                 res = check_position(
                     bars, stop=pos.stop_loss, target=pos.take_profit,
                     opened_at=pos.opened_at or now, last_check=pos.last_check or None,
-                    now=now, to_book=to_lvl,
+                    now=now - delay, to_book=to_lvl,
                 )
                 if native and (res.exit or res.last_close is not None):
                     fx = self._fx(inst.currency)

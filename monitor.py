@@ -89,12 +89,22 @@ def market_state(ticker: str, now: datetime):
     return st, ex, w
 
 
+def check_state(ticker: str, now: datetime):
+    """Like market_state, but for BAR CHECKS: evaluated at now - feed delay, so a
+    delayed feed (Yahoo .L, 20 min) keeps being checked until its last bars are
+    visible (LSE: checks 08:20-16:55, final check 16:55-17:05 London)."""
+    inst = instruments.lookup(ticker)
+    if inst is None:
+        return "unknown", None, None
+    return market_state(ticker, now - instruments.feed_delay(inst))
+
+
 def due_tickers(positions: dict, now: datetime, final_done: dict) -> tuple[list, list]:
     """Tickers needing a bar check now, and final-check keys consumed.
     'unknown' (legacy, no session data) is always checked — conservative."""
     due, keys = [], []
     for tkr in positions:
-        st, ex, w = market_state(tkr, now)
+        st, ex, w = check_state(tkr, now)
         if st in ("open", "unknown"):
             due.append(tkr)
         elif st == "final":

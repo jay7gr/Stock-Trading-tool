@@ -119,11 +119,11 @@ def test_shel_mark_and_dashboard_rows_in_pounds(tmp_path):
                                       now_fn=lambda: now)
     e.requote_wait_s = 0
     e.execute_buy("SHEL", 18 * 36.05, 36.05, 34.7739, 38.7822, "t", 0, 0, 0)
-    assert e.check_stops_and_targets(now=L(25, 16, 40)) == []
+    assert e.check_stops_and_targets(now=L(25, 17, 0)) == []     # 16:29 bar visible after the 20-min delay
     p = e.positions["SHEL.L"]
     assert p.current_price == pytest.approx(36.14)          # 16:29 close 3614p
     assert p.unrealised_pnl == pytest.approx(18 * 0.09)
-    ls = monitor.write_status(e, str(tmp_path), L(25, 16, 40), [], "t", "t")
+    ls = monitor.write_status(e, str(tmp_path), L(25, 17, 0), [], "t", "t")
     row = ls["open_positions"][0]
     assert row["mark_gbp"] == pytest.approx(36.14) and row["stop_gbp"] == pytest.approx(34.7739)
     assert row["value_gbp"] == pytest.approx(650.52) and ls["day_pnl"] == pytest.approx(1.62)
@@ -156,7 +156,7 @@ def test_gbx_and_usd_legs_share_one_minus_200_halt(tmp_path):
                                                            "as_of": "2026-09-28T00:01:00+01:00"}))
     idx = lambda t: pd.DatetimeIndex([pd.Timestamp(t, tz=LONDON)])
     table = {"SHEL.L": pd.DataFrame([[3572, 3572, 3565, 3566]], columns=["Open", "High", "Low", "Close"],
-                                    index=idx("2026-09-28 15:00")),                 # 3570p stop hit
+                                    index=idx("2026-09-28 14:40")),                 # 3570p stop hit (.L 20-min delay)
              "TSM": pd.DataFrame([[414, 414.2, 413.5, 413.75]], columns=["Open", "High", "Low", "Close"],
                                  index=idx("2026-09-28 15:00"))}                    # $413.75/1.25 = £331
     q = {"GBPUSD=X": Quote("GBPUSD=X", 1.25, L(28, 15, 0, 30), "t"),

@@ -83,9 +83,10 @@ def test_final_check_after_close_runs_once(tmp_path):
     table = {"ISPY.L": bars([("2026-09-28 16:34", 3700, 3701, 3699, 3700)])}
     calls = []
     fn = make_bars_fn(table, calls)
-    monitor.run_once(str(tmp_path), now=L(28, 16, 37), bars_fn=fn)   # final window
-    monitor.run_once(str(tmp_path), now=L(28, 16, 38), bars_fn=fn)   # already done
-    r = monitor.run_once(str(tmp_path), now=L(28, 17, 0), bars_fn=fn)
+    # LSE checks are shifted by the 20-min Yahoo delay: final window 16:55-17:05 London
+    monitor.run_once(str(tmp_path), now=L(28, 16, 57), bars_fn=fn)   # final window
+    monitor.run_once(str(tmp_path), now=L(28, 16, 58), bars_fn=fn)   # already done
+    r = monitor.run_once(str(tmp_path), now=L(28, 17, 20), bars_fn=fn)
     assert calls == ["ISPY.L"] and r["action"] == "markets_closed"
 
 
@@ -98,7 +99,7 @@ def test_aggregate_halt_across_lse_and_nyse(tmp_path):
         {"ticker": "XOM", "quantity": 20, "entry": 130.0, "stop_loss": 120.0, "take_profit": 140.0,
          "opened_at": "2026-09-28T14:31:00+01:00"},
     ])
-    table = {"ISPY.L": bars([("2026-09-28 15:00", 3725, 3726, 3715, 3716)]),        # stop 37.20 hit
+    table = {"ISPY.L": bars([("2026-09-28 14:40", 3725, 3726, 3715, 3716)]),        # stop 37.20 hit (20-min delayed .L bar)
              "XOM": bars([("2026-09-28 15:00", 156.0, 156.2, 155.9, 156.25)])}      # $156.25/1.25 = £125
     q = {"GBPUSD=X": Quote("GBPUSD=X", 1.25, L(28, 15, 0, 30), "t"),
          "XOM": Quote("XOM", 156.25, L(28, 15, 1, 0), "t")}

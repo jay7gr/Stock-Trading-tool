@@ -26,6 +26,9 @@ Each pass (live):
     on closed markets are queued (pending_flatten) and sold at their next open;
   * refreshes data/live_status.json (day_pnl, remaining_day_risk_gbp, halted,
     open_positions, closed_today, last_monitor) and data/dashboard_snapshot.json;
+    net-of-costs fields sit next to gross (costs.py; reporting only, the halt stays on gross):
+    day_pnl_gross (= day_pnl), day_pnl_net, day_costs_gbp, day_costs_breakdown, cost_model,
+    open_positions[].costs_gbp / net_unrealised_gbp, closed_today[].net_pnl_gbp;
   * appends events to data/alerts_log.jsonl
     {event_ts, detected_ts, type, ticker, details, notified:false} (actionable rows);
     status-only rows (no_trigger) are written notified:true, skip_reason:"status_only".
@@ -56,6 +59,7 @@ from bar_checks import check_position, floor_minute, BAR
 from alerts import append_alert, notify_fields
 import emulator as emu_mod
 import pnl
+import costs
 
 NO_TRIGGER_EVERY_S = 30 * 60
 
@@ -120,6 +124,33 @@ def day_realised(emu, day: date) -> float:
     return pnl.realised_on(emu.trade_history, day)
 
 
+def _pos_net_fields(p) -> dict:
+    """Net-of-costs fields for one open position (reporting only; never used for risk)."""
+    try:
+        c = costs.position_costs(p)
+        return {"costs_gbp": round(c["total"], 2),
+                "net_unrealised_gbp": round(costs.position_net_unrealised(p), 2)}
+    except Exception:  # noqa: BLE001  - net reporting must never break the monitor
+        return {}
+
+
+def _net_status_fields(emu, today: date, day_pnl: float) -> dict:
+    """Day net P&L next to gross for live_status (costs.py; gross stays the risk number)."""
+    try:
+        r = costs.day_net_pnl(emu.trade_history, emu.positions.values(), today, gross=day_pnl)
+        b = r["breakdown"]
+        return {
+            "day_pnl_gross": round(day_pnl, 2),
+            "day_pnl_net": round(r["net"], 2),
+            "day_costs_gbp": round(r["costs"], 2),
+            "day_costs_breakdown": {k: round(b[k], 2) for k in
+                                    ("fx_buy", "stamp", "fx_sell", "fx_open_exit", "fx_total", "total")},
+            "cost_model": costs.cost_model(),
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"day_pnl_gross": round(day_pnl, 2), "day_pnl_net": None, "net_error": repr(e)}
+
+
 def _pos_rows(emu, today: Optional[date] = None) -> list[dict]:
     rows = []
     for t, p in emu.positions.items():
@@ -144,6 +175,7 @@ def _pos_rows(emu, today: Optional[date] = None) -> list[dict]:
             "mark_gbp": p.current_price,
             "value_gbp": round(p.quantity * p.current_price, 2),
             "unrealised_gbp": round(p.quantity * (p.current_price - p.avg_entry_price), 2),
+            **_pos_net_fields(p),
             "opened_at": p.opened_at,
             "last_check": p.last_check,
         })
@@ -177,6 +209,7 @@ def write_status(emu, data_dir: str, now: datetime, closed: list, action: str,
         "halted": halted,
         "last_check": now.isoformat(),
     })
+    ls.update(_net_status_fields(emu, today, day_pnl))
     if halted:
         ls["halted_date"] = ls.get("halted_date") if ls.get("halted_date") == today.isoformat() else today.isoformat()
     ct = ls.setdefault("closed_today", [])
@@ -194,6 +227,14 @@ def write_status(emu, data_dir: str, now: datetime, closed: list, action: str,
             "exit_at": t.timestamp, "detected_at": now.isoformat(),
             "quote_ts": t.quote_ts, "quote_source": t.quote_source,
         })
+    # net round-trip P&L on every closed_today row (idempotent; rows written by hand included)
+    for row in ct:
+        try:
+            tr = next((x for x in emu.trade_history if x.id == row.get("trade_id") and x.action == "SELL"), None)
+            if tr is not None:
+                row["net_pnl_gbp"] = round(costs.trade_net_pnl(emu.trade_history, tr), 2)
+        except Exception:  # noqa: BLE001
+            pass
     ls["last_monitor"] = {
         "at": now.isoformat(), "action": action, "reason": reason,
         "closed_trades": [t.id for t in closed],
@@ -209,6 +250,8 @@ def write_status(emu, data_dir: str, now: datetime, closed: list, action: str,
         "unrealised_pnl": round(unreal, 2),
         "realised_pnl": round(sum(t.pnl for t in emu.trade_history if t.action == "SELL"), 2),
         "day_pnl": day_pnl,
+        "day_pnl_net": ls.get("day_pnl_net"),
+        "day_costs_gbp": ls.get("day_costs_gbp"),
         "positions": _pos_rows(emu, today),
     }
     _write_json(os.path.join(data_dir, "dashboard_snapshot.json"), snap)

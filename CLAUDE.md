@@ -113,6 +113,10 @@ All optional. Tool works with zero keys (yfinance + StockTwits + Reddit only).
     python sizing.py package --leg TSM:1:429.5215:492.787 --leg WMT:7:103.704:116.532 \
         --leg MSFT:1:492.6326:563.2448 --book [--dry-run]
   lse_leg.py runs the same package check (with --pending legs reserved by rank).
+- costs.py: NET P&L cost model (reporting only): Freetrade FX config.FREETRADE_FX_FEE_PER_SIDE (Plus 0.39%)
+  on non-GBP buy+sell notional + UK stamp (Instrument.purchase_tax_pct, 0.5% UK shares; not ETFs/US).
+  Dashboard and live_status show net next to gross (day_pnl_net, day_costs_gbp, net_unrealised_gbp,
+  closed_today[].net_pnl_gbp). Ranking, sizing and the -£200 halt stay on GROSS.
 - alerts.py: data/alerts_log.jsonl event log
 - tests/: pytest suite (fixture: real ISPY.L 1m bars 2026-09-25)
 - broker_t212.py: Trading 212 REST client

@@ -29,3 +29,11 @@ def test_day_pnl_london_day_realised_plus_mtm():
 def test_real_book_today_is_restated_minus_187_06():
     e = emulator.PaperTradingEmulator()
     assert round(pnl.day_pnl(e.trade_history, e.positions.values(), date(2026, 9, 25)), 2) == -187.06
+
+
+def test_past_day_excludes_positions_opened_later():
+    """A past day evaluated against today's open book must ignore positions opened after it."""
+    later = NS(quantity=10, current_price=12.0, avg_entry_price=10.0, opened_at="2026-09-28T08:06:00+01:00")
+    same = NS(quantity=10, current_price=9.0, avg_entry_price=10.0, opened_at="2026-09-25T09:00:00+01:00")
+    assert pnl.day_pnl([], [later, same], date(2026, 9, 25)) == pytest.approx(-10.0)
+    assert pnl.day_pnl([], [later], date(2026, 9, 28)) == pytest.approx(20.0)   # today unchanged

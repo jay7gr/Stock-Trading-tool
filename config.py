@@ -223,3 +223,17 @@ FEED_DELAY_MIN = {"LSE": 20}
 # (fill and stop in the line's own currency, e.g. USD for US legs). Risk Manager co-owns this
 # value: change it only with a dated Risk ruling. Default 1.0x.
 MIN_STOP_ATR_AT_FILL = 1.0
+
+# ─── Trading costs: NET P&L reporting only (added 2026-09-28) ─────────
+# Net P&L = gross - costs (costs.py). Ranking, sizing, the day halt and all risk checks stay on
+# GROSS; these constants feed only the net figures shown next to gross (dashboard, live_status).
+# Freetrade FX fee per side on non-GBP trades, by plan. Source: Freetrade help "What types of
+# account do you offer?" (27 Feb 2026) and SIPP charges schedule v7.2 (Apr 2026):
+# Basic 0.99%, Standard 0.59%, Plus 0.39%. Desk tier = Plus (Risk SOP v2.3; the same 0.39%/side
+# is sizing.FX_ROUND_TRIP = 0.78% round trip).
+FREETRADE_PLAN = "Plus"
+FREETRADE_FX_FEE_BY_PLAN = {"Basic": 0.0099, "Standard": 0.0059, "Plus": 0.0039}
+FREETRADE_FX_FEE_PER_SIDE = FREETRADE_FX_FEE_BY_PLAN[FREETRADE_PLAN]   # on buy AND sell notional
+# UK stamp duty (SDRT) 0.5% on purchases of UK shares only; not on ETFs (e.g. VUSA, ISPY: Irish
+# UCITS) and not on US shares; nothing on sales. Per-instrument rate: instruments.Instrument.purchase_tax_pct.
+UK_STAMP_DUTY_PCT = 0.005

@@ -76,10 +76,18 @@ def day_ref(pos, day: date) -> tuple[float, str]:
     return entry, "entry_fallback_no_prev_close"
 
 
+def opened_after(pos, day: date) -> bool:
+    """True if the position was opened on a London day AFTER `day` (it cannot count toward that
+    day's P&L; only matters when a past day is evaluated against today's open book)."""
+    opened = trade_day(getattr(pos, "opened_at", None) or None)
+    return opened is not None and opened > day
+
+
 def open_day_change(positions: Iterable, day: date) -> float:
-    """Change in open mark-to-market since the previous close (entry if opened today)."""
+    """Change in open mark-to-market since the previous close (entry if opened today).
+    Positions opened after `day` are excluded (a past day evaluated against today's book)."""
     return sum(float(p.quantity) * (float(p.current_price) - day_ref(p, day)[0])
-               for p in positions)
+               for p in positions if not opened_after(p, day))
 
 
 def day_pnl(trades: Iterable, positions: Iterable, day: date) -> float:

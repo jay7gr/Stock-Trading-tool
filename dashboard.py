@@ -16,6 +16,7 @@ from datetime import date, timedelta
 import config
 from trading_engine import TradingEngine
 from pnl import fmt_gbp, day_pnl as calc_day_pnl, day_risk, read_live_status, halted_on
+import costs
 from quotes import now_london
 from portfolio import (
     get_benchmark_returns, calculate_portfolio_history,
@@ -81,6 +82,18 @@ _today = now_london().date()
 _live = read_live_status(engine.emulator.data_dir)
 day_pnl_gbp = calc_day_pnl(engine.emulator.trade_history, engine.emulator.positions.values(), _today)
 dr = day_risk(day_pnl_gbp)
+# Net = gross - costs (costs.py: Freetrade FX on non-GBP buy+sell notional, UK stamp on UK share
+# buys). Shown NEXT TO gross only; the halt, target progress, ranking and sizing stay on gross.
+_net = costs.day_net_pnl(engine.emulator.trade_history, engine.emulator.positions.values(), _today,
+                         gross=day_pnl_gbp)
+day_pnl_net_gbp, day_costs_gbp = _net["net"], _net["costs"]
+total_costs_gbp = costs.total_costs_to_date(engine.emulator.trade_history, engine.emulator.positions.values())
+total_pnl_net_gbp = summary["total_pnl"] - total_costs_gbp
+_cm = costs.cost_model()
+NET_HELP = (f"Net = gross - costs: Freetrade {_cm['plan']} FX {_cm['fx_fee_per_side'] * 100:.2f}% per side on "
+            f"non-GBP buys and sells + UK stamp {_cm['uk_stamp_duty_on_uk_share_buys'] * 100:.1f}% on UK share "
+            "buys (not ETFs, not US shares). Day net also deducts exit FX accrued on open non-GBP legs at the "
+            "mark. Reporting only: halt, target, ranking and sizing use gross.")
 is_halted = halted_on(_live, _today) or dr["breached"]
 
 
@@ -113,18 +126,22 @@ def _styled(df, cols):
 
 # ─── Row 1: Key Metrics ──────────────────────────────────────────────
 st.header("Portfolio Overview")
-cols = st.columns(6)
+cols = st.columns(7)
 
 with cols[0]:
     st.metric("Portfolio Value", fmt_gbp(summary['portfolio_value']),
-              delta=fmt_gbp(summary['total_pnl'], signed=True))
+              delta=f"{fmt_gbp(summary['total_pnl'], signed=True)} gross")
+    st.caption(f"Net: {fmt_gbp(total_pnl_net_gbp, signed=True)} (costs {fmt_gbp(total_costs_gbp)})",
+               help=NET_HELP)
 with cols[1]:
     st.metric("Cash Available", fmt_gbp(summary['cash']))
 with cols[2]:
-    st.metric("Total Return", f"{summary['total_pnl_pct']:+.2f}%",
+    st.metric("Total Return (gross)", f"{summary['total_pnl_pct']:+.2f}%",
               delta=fmt_gbp(summary['total_pnl'], signed=True))
+    st.caption(f"Net: {total_pnl_net_gbp / config.INITIAL_CAPITAL * 100:+.2f}% / "
+               f"{fmt_gbp(total_pnl_net_gbp, signed=True)}", help=NET_HELP)
 with cols[3]:
-    st.metric("Today's P&L", fmt_gbp(day_pnl_gbp),
+    st.metric("Today's P&L (gross)", fmt_gbp(day_pnl_gbp),
               delta=f"{fmt_gbp(day_pnl_gbp, signed=True)} today" if day_pnl_gbp else None,
               help="SOP v2.3: realised today (London day) + change in open mark-to-market since the "
                    "previous close (since entry for positions opened today), all markets, GBP.")
@@ -133,10 +150,15 @@ with cols[3]:
     else:
         st.badge("Trading active", color="green")
 with cols[4]:
-    st.metric("Open Positions", summary['open_positions'])
+    st.metric("Today's P&L (net)", fmt_gbp(day_pnl_net_gbp),
+              delta=f"-{fmt_gbp(day_costs_gbp)} costs" if day_costs_gbp else None,
+              delta_color="off", help=NET_HELP)
 with cols[5]:
+    st.metric("Open Positions", summary['open_positions'])
+with cols[6]:
     st.metric("Daily Target", f"{dr['target_progress'] * 100:.0f}%",
               delta=f"{fmt_gbp(day_pnl_gbp, signed=True)} / {fmt_gbp(dr['target'], signed=True)}")
+    st.caption(f"Net {fmt_gbp(day_pnl_net_gbp, signed=True)} (target measured on gross)")
 
 # Day P&L vs +£200 target and -£200 halt
 g1, g2 = st.columns(2)
@@ -152,15 +174,17 @@ with g2:
 # Risk status bar
 if is_halted:
     reason = _live.get("halt_reason") or f"Day P&L {fmt_gbp(day_pnl_gbp)} <= {fmt_gbp(dr['stop'])}"
-    st.error(f"TRADING HALTED: {reason}")
+    st.error(f"TRADING HALTED: {reason} | net {fmt_gbp(day_pnl_net_gbp, signed=True)}")
 elif day_pnl_gbp < 0:
-    st.warning(f"Daily loss: {fmt_gbp(day_pnl_gbp)} | Headroom to {fmt_gbp(dr['stop'])} halt: "
-               f"{fmt_gbp(dr['headroom_to_halt'])}")
+    st.warning(f"Daily loss: {fmt_gbp(day_pnl_gbp)} gross / {fmt_gbp(day_pnl_net_gbp)} net | "
+               f"Headroom to {fmt_gbp(dr['stop'])} halt (gross): {fmt_gbp(dr['headroom_to_halt'])}")
 elif day_pnl_gbp >= config.DAILY_PROFIT_TARGET_MIN:
-    st.success(f"Daily target reached! P&L: {fmt_gbp(day_pnl_gbp, signed=True)}")
+    st.success(f"Daily target reached! P&L: {fmt_gbp(day_pnl_gbp, signed=True)} gross / "
+               f"{fmt_gbp(day_pnl_net_gbp, signed=True)} net")
 else:
-    st.info(f"Trading active | Target: {fmt_gbp(config.DAILY_PROFIT_TARGET_MIN)}-"
-            f"{fmt_gbp(config.DAILY_PROFIT_TARGET_MAX)}/day")
+    st.info(f"Trading active | Today {fmt_gbp(day_pnl_gbp, signed=True)} gross / "
+            f"{fmt_gbp(day_pnl_net_gbp, signed=True)} net | Target: {fmt_gbp(config.DAILY_PROFIT_TARGET_MIN)}-"
+            f"{fmt_gbp(config.DAILY_PROFIT_TARGET_MAX)}/day (gross)")
 
 st.divider()
 
@@ -242,11 +266,14 @@ with tab_positions:
                 "Value": fmt_gbp(pos.value_gbp),
                 "P&L": fmt_gbp(pos.unrealised_pnl, signed=True),
                 "P&L %": f"{pos.unrealised_pnl_pct:+.1f}%",
+                "Net P&L": fmt_gbp(costs.position_net_unrealised(pos), signed=True),
+                "Costs": fmt_gbp(costs.position_costs(pos)["total"]),
                 "Stop": _level_str(pos, pos.stop_loss),
                 "Target": _level_str(pos, pos.take_profit),
             })
-        st.dataframe(_styled(pd.DataFrame(pos_data), ["P&L", "P&L %"]),
+        st.dataframe(_styled(pd.DataFrame(pos_data), ["P&L", "P&L %", "Net P&L"]),
                      use_container_width=True, hide_index=True)
+        st.caption("P&L = gross since entry. Net P&L = gross - entry costs - exit FX at the mark. " + NET_HELP)
 
         # Position pie chart
         fig = px.pie(
@@ -277,10 +304,16 @@ with tab_history:
                 "Grok": f"{t.grok_score:.1f}",
                 "Combined": f"{t.combined_score:.1f}",
                 "P&L": fmt_gbp(t.pnl, signed=True) if t.pnl else "-",
+                "Net P&L": (fmt_gbp(costs.trade_net_pnl(trades, t), signed=True)
+                            if t.action == "SELL" else "-"),
+                "Costs": fmt_gbp((costs.buy_costs if t.action == "BUY" else costs.sell_costs)(
+                    t.ticker, t.value_gbp)["total"]),
                 "Status": t.status,
             })
-        st.dataframe(_styled(pd.DataFrame(trade_data), ["P&L"]),
+        st.dataframe(_styled(pd.DataFrame(trade_data), ["P&L", "Net P&L"]),
                      use_container_width=True, hide_index=True)
+        st.caption("Net P&L on SELL rows = round-trip gross P&L - buy costs (FX + stamp) - sell FX. "
+                   "Costs = this leg's FX/stamp. " + NET_HELP)
 
         # Trade detail expander
         selected_trade = st.selectbox(
@@ -344,6 +377,14 @@ with tab_benchmark:
 
         # Period returns table
         period_returns = compute_period_returns(portfolio_df, benchmark_df)
+        _pstart = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 90, "annual": 365}
+
+        def _period_costs(name):
+            d0 = None if name not in _pstart else date.today() - timedelta(days=_pstart[name])
+            from pnl import trade_day as _td
+            return sum((costs.buy_costs if t.action == "BUY" else costs.sell_costs)(t.ticker, t.value_gbp)["total"]
+                       for t in engine.emulator.trade_history
+                       if d0 is None or (_td(t.timestamp) and _td(t.timestamp) >= d0))
         returns_data = []
         for period_name, vals in period_returns.items():
             returns_data.append({
@@ -352,9 +393,11 @@ with tab_benchmark:
                 "VUSA (S&P 500)": f"{vals['benchmark_return']:+.2f}%",
                 "Alpha": f"{vals['alpha']:+.2f}%",
                 "P&L": fmt_gbp(vals['portfolio_pnl'], signed=True),
+                "Net P&L": fmt_gbp(vals['portfolio_pnl'] - _period_costs(period_name), signed=True),
             })
-        st.dataframe(_styled(pd.DataFrame(returns_data), ["Portfolio", "VUSA (S&P 500)", "Alpha", "P&L"]),
+        st.dataframe(_styled(pd.DataFrame(returns_data), ["Portfolio", "VUSA (S&P 500)", "Alpha", "P&L", "Net P&L"]),
                      use_container_width=True, hide_index=True)
+        st.caption("Net P&L = P&L - FX/stamp on trades booked in the period.")
 
         # Risk metrics
         st.markdown("### Risk Metrics")

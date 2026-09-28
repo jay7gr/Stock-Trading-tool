@@ -167,8 +167,9 @@ def test_book_package_us_legs_with_open_lse_legs(tmp_path):
     (tmp_path / "trades.json").write_text("[]")
     q = {"TSM": Quote("TSM", 450.0, _L(14, 35, 0), "t"), "WMT": Quote("WMT", 107.9, _L(14, 35, 0), "t"),
          "MSFT": Quote("MSFT", 516.0, _L(14, 35, 0), "t"), "GBPUSD=X": Quote("GBPUSD=X", FX, _L(14, 35, 0), "t")}
-    specs = [sizing.parse_leg(x) for x in ("TSM:1:429.5215:492.787", "WMT:7:103.704:116.532",
-                                           "MSFT:1:492.6326:563.2448")]
+    # 5th field = ATR14 abs USD (Research _atr_completed_bars.json use_atr_abs)
+    specs = [sizing.parse_leg(x) for x in ("TSM:1:429.5215:492.787:10.5273", "WMT:7:103.704:116.532:2.1403",
+                                           "MSFT:1:492.6326:563.2448:11.7724")]
     r = sizing.book_package(specs, data_dir=str(tmp_path), now_fn=lambda: now, quote_fn=q.get)
     assert r["ok"] and [f["symbol"] for f in r["fills"]] == ["TSM", "WMT", "MSFT"]
     assert r["package"]["combined_risk_gbp"] <= 200
@@ -185,6 +186,6 @@ def test_book_package_dry_run_writes_nothing(tmp_path):
     now = _L(14, 35, 5)
     (tmp_path / "monitor_heartbeat.json").write_text(json.dumps({"at": now.isoformat()}))
     q = {"MSFT": Quote("MSFT", 516.0, _L(14, 35, 0), "t"), "GBPUSD=X": Quote("GBPUSD=X", FX, _L(14, 35, 0), "t")}
-    r = sizing.book_package([sizing.parse_leg("MSFT:1:492.6326")], data_dir=str(tmp_path), dry_run=True,
+    r = sizing.book_package([sizing.parse_leg("MSFT:1:492.6326::11.7724")], data_dir=str(tmp_path), dry_run=True,
                             now_fn=lambda: now, quote_fn=q.get)
     assert r["ok"] and sorted(p.name for p in tmp_path.iterdir()) == ["monitor_heartbeat.json"]

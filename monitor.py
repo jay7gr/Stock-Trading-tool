@@ -27,7 +27,8 @@ Each pass (live):
   * refreshes data/live_status.json (day_pnl, remaining_day_risk_gbp, halted,
     open_positions, closed_today, last_monitor) and data/dashboard_snapshot.json;
   * appends events to data/alerts_log.jsonl
-    {event_ts, detected_ts, type, ticker, details, notified:false}.
+    {event_ts, detected_ts, type, ticker, details, notified:false} (actionable rows);
+    status-only rows (no_trigger) are written notified:true, skip_reason:"status_only".
 When flat, or when every open position's market is closed, it only reads
 portfolio.json and touches a heartbeat file (no network).
 """
@@ -52,7 +53,7 @@ import instruments
 import quotes
 from quotes import now_london, to_london, StaleQuoteError
 from bar_checks import check_position, floor_minute, BAR
-from alerts import append_alert
+from alerts import append_alert, notify_fields
 import emulator as emu_mod
 import pnl
 
@@ -508,7 +509,7 @@ def replay_day(day: str, specs: list[dict], bars_loader: Callable[[str, str], "p
             events.append({"event_ts": end.isoformat(), "detected_ts": end.isoformat(),
                            "type": "no_trigger", "ticker": inst.yf_symbol,
                            "details": {"replay": True, "note": "no stop/target touched"},
-                           "notified": False})
+                           **notify_fields("no_trigger")})
     if alerts_path:
         with open(alerts_path, "a") as f:
             for e in events:

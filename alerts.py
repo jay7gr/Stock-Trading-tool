@@ -1,7 +1,14 @@
 """Append-only alert log: data/alerts_log.jsonl.
 
-Each line: {event_ts, detected_ts, type, ticker, details, notified:false}
-type is one of fill|stop|scale|target|exit|skip|no_trigger|halt.
+Each line: {event_ts, detected_ts, type, ticker, details, notified, [sent_at, skip_reason]}
+
+Hygiene rule (post 2026-09-28 postmortem): every row ends up either notified=true or
+carrying an explicit skip_reason, so nothing lingers past the 5-minute relay SLA.
+  * ACTIONABLE types (fill, exit, stop, target, scale, halt, skip, failure) are written
+    notified=false and stay that way until the relay sends them and stamps sent_at.
+  * STATUS-ONLY types (no_trigger, heartbeat, monitor) are informational: they are written
+    already closed out as notified=true, skip_reason="status_only", sent_at=null (nothing
+    was sent) so the relay never picks them up.
 """
 
 from __future__ import annotations
@@ -13,7 +20,22 @@ from typing import Optional
 
 from quotes import now_london, to_london
 
-EVENT_TYPES = {"fill", "stop", "scale", "target", "exit", "skip", "no_trigger", "halt"}
+ACTIONABLE_TYPES = {"fill", "exit", "stop", "target", "scale", "halt", "skip", "failure"}
+STATUS_ONLY_TYPES = {"no_trigger", "heartbeat", "monitor"}
+EVENT_TYPES = ACTIONABLE_TYPES | STATUS_ONLY_TYPES
+STATUS_ONLY_SKIP_REASON = "status_only"
+BACKFILL_SKIP_REASON = "status_only_backfill"
+
+
+def is_status_only(type_: str) -> bool:
+    return type_ in STATUS_ONLY_TYPES
+
+
+def notify_fields(type_: str) -> dict:
+    """Notification bookkeeping for a new row of this type (see module doc)."""
+    if is_status_only(type_):
+        return {"notified": True, "sent_at": None, "skip_reason": STATUS_ONLY_SKIP_REASON}
+    return {"notified": False}
 
 
 def append_alert(data_dir: str, type_: str, ticker: str, details: dict,
@@ -28,7 +50,7 @@ def append_alert(data_dir: str, type_: str, ticker: str, details: dict,
         "type": type_,
         "ticker": ticker,
         "details": details,
-        "notified": False,
+        **notify_fields(type_),
     }
     os.makedirs(data_dir, exist_ok=True)
     with open(os.path.join(data_dir, "alerts_log.jsonl"), "a") as f:

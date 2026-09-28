@@ -217,3 +217,9 @@ MAX_QUOTE_AGE_S = 60                 # every fill needs a quote <= 60s old (re-q
 # Stop/target checks treat bars as complete only once start + 1m <= now - delay (a delayed feed's
 # latest bar is still forming), and the monitor's check schedule for that exchange is shifted by it.
 FEED_DELAY_MIN = {"LSE": 20}
+
+# ─── Live ATR floor at fill (post 2026-09-28 postmortem; Risk SOP v2.3 "absolute floor") ──
+# A leg is REFUSED before booking when |live fill - stop| / ATR(14) daily < this multiple
+# (fill and stop in the line's own currency, e.g. USD for US legs). Risk Manager co-owns this
+# value: change it only with a dated Risk ruling. Default 1.0x.
+MIN_STOP_ATR_AT_FILL = 1.0

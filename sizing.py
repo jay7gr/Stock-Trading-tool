@@ -51,6 +51,17 @@ PACKAGE-LEVEL CHECK (Risk execution ruling 27 Sep; replaces per-leg budgets):
         --price TSM=451.20 --price WMT=108.05 --price MSFT=516.90        # or --live
     add --book (or --book --dry-run) to also book the fills via the emulator on fresh (<=60s)
     quotes — for real-time lines (US). LSE legs use lse_leg.py (delayed 1m bars).
+
+LIVE ATR FLOOR AT FILL (post 2026-09-28 postmortem; SOP v2.3 absolute floor):
+    after the live fill quote and BEFORE booking, every leg that would book is checked:
+        ratio = |live fill - stop| / ATR14      (both in the line's own currency, USD for US legs)
+    ratio < config.MIN_STOP_ATR_AT_FILL (Risk co-owned, default 1.0) -> the leg is REFUSED:
+    not booked, logged to stderr, recorded as a `skip` alert (reason atr_floor, with ratio /
+    fill / stop / atr) and listed under "skips" in the result. On --book a leg with no ATR is
+    refused too (reason atr_missing): the floor cannot be verified. Other legs are NOT resized
+    (their qty is exactly what package sizing gave; freed risk is not reused).
+    ATR14 is passed per leg as the 5th leg field (SYM:QTY:STOP:TARGET:ATR, target may be empty)
+    or with --atr SYM=VALUE (absolute ATR, line currency; use Research's larger-of-two value).
 """
 
 from __future__ import annotations
@@ -63,6 +74,7 @@ import sys
 from dataclasses import dataclass, asdict
 from typing import Optional
 
+import config
 import instruments
 
 # 2026-09-28 package rank (Risk tickets; 1 = highest). Cuts go from the bottom up.
@@ -79,6 +91,74 @@ ROUNDING_TOL = 1e-4
 
 class SizingError(ValueError):
     pass
+
+
+ATR_FLOOR_REASON = "atr_floor"
+ATR_MISSING_REASON = "atr_missing"
+ATR_RATIO_EPS = 1e-9           # float tolerance so fill = stop + 1.0 x ATR is not refused
+
+
+def atr_floor_check(fill: float, stop: float, atr: Optional[float],
+                    floor: Optional[float] = None) -> dict:
+    """Live stop/ATR floor at fill (SOP v2.3). `fill`, `stop` and `atr` in the SAME currency
+    (the stop's level currency; USD for US legs). ok=False with reason atr_floor when
+    |fill - stop| / atr < floor (default config.MIN_STOP_ATR_AT_FILL), atr_missing when no
+    positive ATR is given."""
+    floor = config.MIN_STOP_ATR_AT_FILL if floor is None else float(floor)
+    out = {"fill": fill, "stop": stop, "atr": atr, "floor": floor, "distance": None, "ratio": None}
+    if fill is None or stop is None:
+        return {**out, "ok": False, "reason": "no fill/stop to check"}
+    dist = abs(float(fill) - float(stop))
+    out["distance"] = round(dist, 6)
+    if atr is None or not float(atr) > 0:
+        return {**out, "ok": False, "reason": ATR_MISSING_REASON}
+    ratio = dist / float(atr)
+    out["ratio"] = round(ratio, 4)
+    ok = ratio >= floor - ATR_RATIO_EPS          # ratio exactly at the floor passes
+    return {**out, "ok": ok, "reason": None if ok else ATR_FLOOR_REASON}
+
+
+def record_atr_skip(data_dir: Optional[str], symbol: str, chk: dict, now=None,
+                    path: str = "sizing.book_package", currency: str = "") -> dict:
+    """Log + record a refused leg so PM can report the skip (alerts_log `skip`, actionable)."""
+    details = {"reason": chk["reason"], "ratio": chk["ratio"], "fill": chk["fill"],
+               "stop": chk["stop"], "atr": chk["atr"], "floor": chk["floor"],
+               "distance": chk["distance"], "currency": currency, "path": path,
+               "action": "leg refused before booking; other legs not resized"}
+    print(f"[sizing] SKIP {symbol} {chk['reason']}: ratio={chk['ratio']} fill={chk['fill']} "
+          f"stop={chk['stop']} atr={chk['atr']} floor={chk['floor']} ({path})", file=sys.stderr)
+    if data_dir:
+        try:
+            from alerts import append_alert
+            append_alert(data_dir, "skip", symbol, details, event_ts=now, detected_ts=now)
+        except Exception as e:  # noqa: BLE001
+            print(f"[sizing] skip alert write failed: {e}", file=sys.stderr)
+    return {"symbol": symbol, **details}
+
+
+def apply_atr_floor(pkg: dict, atr_by_symbol: dict, *, require: bool,
+                    floor: Optional[float] = None) -> list:
+    """Gate every leg that would fill (qty > 0) on the live stop/ATR floor, in place.
+    A refused leg goes to qty 0 (status 'skip: atr_floor ...'); every other leg keeps
+    exactly its package qty. Returns [(symbol, check)] for refused legs."""
+    refused = []
+    for row in pkg["legs"]:
+        atr = atr_by_symbol.get(row["symbol"])
+        if row["qty"] <= 0 or (atr is None and not require):
+            continue
+        chk = atr_floor_check(row["live_price"], row["stop"], atr, floor)
+        row["atr_check"] = chk
+        if not chk["ok"]:
+            row["status"] = (f"skip: {chk['reason']} (stop/ATR {chk['ratio']} < {chk['floor']})"
+                             if chk["reason"] == ATR_FLOOR_REASON else f"skip: {chk['reason']}")
+            row["qty"], row["risk_gbp"] = 0, 0.0
+            refused.append((row["symbol"], chk))
+    if refused:
+        new_risk = sum(r["risk_gbp"] for r in pkg["legs"])
+        pkg["new_risk_gbp"] = round(new_risk, 4)
+        pkg["combined_risk_gbp"] = round(pkg["open_risk_gbp"] + new_risk + pkg["realised_loss_today"], 4)
+        pkg["ok"] = any(r["qty"] > 0 for r in pkg["legs"])
+    return refused
 
 
 @dataclass
@@ -334,18 +414,23 @@ def dry_copy(real_dir: str, simulated_now=None) -> str:
 
 
 def parse_leg(spec: str) -> dict:
-    """SYM:TICKET_QTY:STOP[:TARGET]"""
+    """SYM:TICKET_QTY:STOP[:TARGET[:ATR14]]  (target may be empty: SYM:1:492.6326::11.7724)"""
     parts = spec.split(":")
-    if len(parts) not in (3, 4):
-        raise SizingError(f"leg spec {spec!r} must be SYM:QTY:STOP[:TARGET]")
+    if len(parts) not in (3, 4, 5):
+        raise SizingError(f"leg spec {spec!r} must be SYM:QTY:STOP[:TARGET[:ATR]]")
+    opt = lambda i: float(parts[i]) if len(parts) > i and parts[i].strip() else None
     return {"symbol": parts[0], "ticket_qty": int(parts[1]), "stop": float(parts[2]),
-            "target": float(parts[3]) if len(parts) == 4 else None}
+            "target": opt(3), "atr": opt(4)}
+
+
+def _atr_map(leg_specs: list) -> dict:
+    return {_inst(sp["symbol"]).symbol: sp.get("atr") for sp in leg_specs}
 
 
 def book_package(leg_specs: list, *, data_dir: Optional[str] = None, dry_run: bool = False,
                  now_fn=None, quote_fn=None, gbpusd: Optional[float] = None,
                  ranks=MONDAY_RANK, day_limit: float = DAY_LIMIT_GBP,
-                 simulated_clock: bool = False) -> dict:
+                 simulated_clock: bool = False, atr_floor: Optional[float] = None) -> dict:
     """Size a package of REAL-TIME legs (e.g. the US legs) at package level and book
     the fills via the emulator on fresh (<=60s) quotes. Delayed-feed legs (LSE) are
     refused here: use lse_leg.py. dry_run books into a temp copy (data/ untouched)."""
@@ -359,7 +444,7 @@ def book_package(leg_specs: list, *, data_dir: Optional[str] = None, dry_run: bo
     quote_fn = quote_fn or quotes.fetch_quote
     real_dir = data_dir or emu_mod.DATA_DIR
     out = {"wall_clock": now.isoformat(), "dry_run": dry_run, "simulated_clock": simulated_clock,
-           "ok": False, "fills": []}
+           "ok": False, "fills": [], "skips": []}
     legs, qs, fx_used = [], {}, {}
     try:
         for sp in leg_specs:
@@ -388,6 +473,9 @@ def book_package(leg_specs: list, *, data_dir: Optional[str] = None, dry_run: bo
         open_legs, realised = book_state(run_dir if (dry_run or data_dir) else None, now,
                                          fx_fn=lambda c: fx_used.get(c))
         pkg = package_qty(legs, open_legs, realised, day_limit)
+        # hard live ATR-floor refusal BEFORE booking (fill = the live quote in the stop's currency)
+        for sym, chk in apply_atr_floor(pkg, _atr_map(leg_specs), require=True, floor=atr_floor):
+            out["skips"].append(record_atr_skip(run_dir, sym, chk, now, currency=_inst(sym).currency))
         out["package"] = pkg
         emu = emu_mod.PaperTradingEmulator(data_dir=run_dir if (dry_run or data_dir) else None,
                                            quote_fn=quote_fn, now_fn=lambda: now)
@@ -412,8 +500,10 @@ def book_package(leg_specs: list, *, data_dir: Optional[str] = None, dry_run: bo
             except Exception as e:  # noqa: BLE001
                 out["fills"].append({"symbol": inst.symbol, "ok": False, "reason": f"{type(e).__name__}: {e}"})
         out["ok"] = any(f["ok"] for f in out["fills"])
+        if not out["fills"] and out["skips"]:
+            out["reason"] = "all legs refused: " + ", ".join(f"{k['symbol']} {k['reason']}" for k in out["skips"])
         out["cash_after"] = round(emu.cash, 2)
-        out["reason"] = ("dry run: nothing written to data/" if dry_run else f"booked into {run_dir}")
+        out.setdefault("reason", "dry run: nothing written to data/" if dry_run else f"booked into {run_dir}")
         return out
     finally:
         if dry_run:
@@ -423,7 +513,9 @@ def book_package(leg_specs: list, *, data_dir: Optional[str] = None, dry_run: bo
 def package_main(argv) -> int:
     ap = argparse.ArgumentParser(prog="sizing.py package", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--leg", action="append", required=True, help="SYM:TICKET_QTY:STOP[:TARGET]")
+    ap.add_argument("--leg", action="append", required=True, help="SYM:TICKET_QTY:STOP[:TARGET[:ATR14]]")
+    ap.add_argument("--atr", action="append", default=[],
+                    help="SYM=ATR14 absolute, line currency (required per leg with --book)")
     ap.add_argument("--price", action="append", default=[], help="SYM=live price, major units (sizing only)")
     ap.add_argument("--live", action="store_true", help="sizing only: fetch public yfinance quotes")
     ap.add_argument("--gbpusd", type=float)
@@ -439,6 +531,11 @@ def package_main(argv) -> int:
     a = ap.parse_args(argv)
     ranks = tuple(x.strip().upper() for x in a.rank.split(","))
     specs = [parse_leg(x) for x in a.leg]
+    atr_cli = {_inst(k).symbol: float(v) for k, v in (x.split("=", 1) for x in a.atr)}
+    for sp in specs:
+        sym = _inst(sp["symbol"]).symbol
+        if sym in atr_cli:
+            sp["atr"] = atr_cli[sym]
     if a.book:
         if a.price or a.live:
             ap.error("--book takes quotes from the live feed itself; drop --price/--live")
@@ -477,6 +574,8 @@ def package_main(argv) -> int:
         open_legs.append(OpenLeg(inst.symbol, float(q), float(st), float(ref),
                                  None if inst.currency == "GBP" else fxv))
     res = package_qty(legs, open_legs, realised, a.day_limit)
+    # sizing-only: apply the live ATR floor to legs that carry an ATR (advisory; --book requires it)
+    res["skips"] = [{"symbol": s, **c} for s, c in apply_atr_floor(res, _atr_map(specs), require=False)]
     print(json.dumps(res, indent=2, default=str))
     return 0 if res["ok"] else 2
 

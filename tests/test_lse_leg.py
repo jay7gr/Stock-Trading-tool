@@ -11,8 +11,9 @@ import emulator
 import lse_leg
 from quotes import LONDON, Quote, StaleQuoteError, load_day_bars
 
-VUSA = dict(ticket_qty=13, stop=108.1686, entry=110.4325, target=114.9603)
-SHEL = dict(ticket_qty=18, stop=34.7739, entry=36.11, target=38.7822)
+# atr = Research ATR14 abs, GBP (_atr_completed_bars.json use_atr_abs; SHEL 66.845p / 100)
+VUSA = dict(ticket_qty=13, stop=108.1686, entry=110.4325, target=114.9603, atr=0.9006)
+SHEL = dict(ticket_qty=18, stop=34.7739, entry=36.11, target=38.7822, atr=0.6685)
 
 
 def L(h, m, s=0, d=25):

@@ -17,6 +17,9 @@ bar is visible (~20 min later):
                 reserved for later (e.g. the US legs at ticket entry) stays <= £200; cuts
                 go from the lowest rank up (MSFT, WMT, SHEL, VUSA, TSM), whole shares.
   cancel      = bar open <= ticket stop (nothing booked)
+  ATR floor   = |bar open - stop| / ATR14 (GBP) < config.MIN_STOP_ATR_AT_FILL (Risk, default 1.0)
+                -> refused before booking (skip alert reason atr_floor; --atr is required,
+                a leg without it is refused as atr_missing)
   no look-ahead: bars after the decision minute are discarded before anything is used.
 
 Refused (nothing booked): no bar at that exact minute (illiquid or not yet visible),
@@ -28,7 +31,7 @@ between the fill bar and now are checked on its next pass).
 CLI
   python lse_leg.py VUSA --at 08:06 --ticket-qty 13 --stop 108.1686 --entry 110.4325 --target 114.9603 \
       --pending TSM:1:429.5215:450.61 --pending WMT:7:103.704:107.98 --pending MSFT:1:492.6326:516.17 --gbpusd 1.325346
-  python lse_leg.py SHEL --at 08:06 --ticket-qty 18 --stop 34.7739 --entry 36.11 --target 38.7822 --dry-run
+  python lse_leg.py SHEL --at 08:06 --ticket-qty 18 --stop 34.7739 --entry 36.11 --target 38.7822 --atr 0.668 --dry-run
   --at HH:MM (today, London) or a full ISO time; --dry-run writes nothing to data/ (runs the
   emulator on a temp copy). --now ISO (dry-run only) simulates the wall clock, e.g. to replay Friday.
   --pending SYM:QTY:STOP:REF_PRICE reserves headroom for legs that fill later (rank-aware);
@@ -89,7 +92,9 @@ def book_lse_leg(symbol: str, at: datetime, ticket_qty: int, stop: float, entry:
                  pending: Optional[list] = None,
                  gbpusd: Optional[float] = None,
                  ranks=sizing.MONDAY_RANK,
-                 day_limit: float = sizing.DAY_LIMIT_GBP) -> dict:
+                 day_limit: float = sizing.DAY_LIMIT_GBP,
+                 atr: Optional[float] = None,
+                 atr_floor: Optional[float] = None) -> dict:
     """Fill one LSE leg at the delayed 1m bar OPEN of `at`. Returns a result dict
     (ok, reason, bar, sizing, trade). Books into data_dir (default data/) unless dry_run."""
     now_fn = now_fn or now_london
@@ -153,6 +158,16 @@ def book_lse_leg(symbol: str, at: datetime, ticket_qty: int, stop: float, entry:
         if qty <= 0:
             out["reason"] = f"package check: {mine['status']} (headroom £{pkg['headroom_gbp']:.2f})"
             return out
+        # hard live ATR-floor refusal BEFORE booking (fill = bar open, GBP, same ccy as the stop)
+        chk = sizing.atr_floor_check(px, stop, atr, atr_floor)
+        out["atr_check"] = chk
+        if not chk["ok"]:
+            out["skip"] = sizing.record_atr_skip(run_dir, inst.symbol, chk, now,
+                                                 path="lse_leg.book_lse_leg", currency=inst.currency)
+            out["reason"] = (f"refused: {chk['reason']} (stop/ATR {chk['ratio']} < {chk['floor']}); nothing booked"
+                             if chk["reason"] == sizing.ATR_FLOOR_REASON
+                             else f"refused: {chk['reason']} (pass --atr); nothing booked")
+            return out
         emu = emu_mod.PaperTradingEmulator(
             data_dir=run_dir if (dry_run or data_dir) else None,
             quote_fn=lambda s: None, now_fn=lambda: now, write_alerts=True)
@@ -199,6 +214,8 @@ def main(argv=None) -> int:
                     help="SYM:QTY:STOP:REF_PRICE leg filling later (reserves headroom by rank)")
     ap.add_argument("--gbpusd", type=float, default=None)
     ap.add_argument("--rank", default=",".join(sizing.MONDAY_RANK))
+    ap.add_argument("--atr", type=float, default=None,
+                    help="ATR14 absolute, GBP (required: live stop/ATR floor checked before booking)")
     a = ap.parse_args(argv)
     pending = []
     for p in a.pending:
@@ -210,7 +227,7 @@ def main(argv=None) -> int:
     at = parse_at(a.at, to_london(now_fn()))
     res = book_lse_leg(a.symbol, at, a.ticket_qty, a.stop, a.entry, a.target, dry_run=a.dry_run,
                        data_dir=a.data_dir, now_fn=now_fn, simulated_clock=bool(a.now),
-                       pending=pending, gbpusd=a.gbpusd,
+                       pending=pending, gbpusd=a.gbpusd, atr=a.atr,
                        ranks=tuple(x.strip().upper() for x in a.rank.split(",")))
     print(json.dumps(res, indent=2, default=str))
     return 0 if res.get("ok") else 2

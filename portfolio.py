@@ -40,21 +40,27 @@ def calculate_portfolio_history(trade_history: list, initial_capital: float) -> 
             "cumulative_pnl": [0.0],
         }, index=idx)
 
-    # Group trades by date and compute daily P&L
+    # Realised P&L is booked ONLY on SELL rows. Emulator.sell() also stamps the same
+    # round-trip P&L onto the closed BUY leg(s) "so history reads consistently";
+    # summing pnl over every row therefore counted each round trip twice (and
+    # dated the BUY copy on the entry day). Same rule as Emulator.total_realised_pnl.
     daily_pnl = {}
     for trade in trade_history:
         trade_date = trade.timestamp[:10] if isinstance(trade.timestamp, str) else trade.timestamp.date().isoformat()
         if trade_date not in daily_pnl:
-            daily_pnl[trade_date] = 0
-        if hasattr(trade, 'pnl'):
-            daily_pnl[trade_date] += trade.pnl
+            daily_pnl[trade_date] = 0.0
+        if getattr(trade, "action", "") == "SELL":
+            daily_pnl[trade_date] += float(getattr(trade, "pnl", 0.0) or 0.0)
 
     if not daily_pnl:
         return pd.DataFrame()
 
-    # Build time series
+    # Build time series, anchored at initial_capital on the day BEFORE the first
+    # trade so the first trading day's P&L shows up in every period delta
+    # (compute_period_returns takes last - first; without the anchor the first
+    # row already included day-1 P&L and it was silently dropped).
     dates = sorted(daily_pnl.keys())
-    start = pd.to_datetime(dates[0])
+    start = pd.to_datetime(dates[0]) - pd.Timedelta(days=1)
     end = pd.to_datetime(max(dates[-1], date.today().isoformat()))
     idx = pd.date_range(start=start, end=end, freq="D")
 
@@ -62,7 +68,7 @@ def calculate_portfolio_history(trade_history: list, initial_capital: float) -> 
     cumulative = initial_capital
     for d in idx:
         d_str = d.strftime("%Y-%m-%d")
-        pnl = daily_pnl.get(d_str, 0)
+        pnl = daily_pnl.get(d_str, 0.0)
         cumulative += pnl
         values.append({
             "date": d,
